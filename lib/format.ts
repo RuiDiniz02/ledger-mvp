@@ -1,20 +1,28 @@
-const nf = new Intl.NumberFormat('en-IE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const nf0 = new Intl.NumberFormat('en-IE', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+import type { Lang } from './types';
 
 export const CURRENCY = '\u20ac';
 
-/** minor units -> display string */
-export function money(cents: number, dec = true) {
+export function money(cents: number, dec = true, lang: Lang = 'en') {
+  const loc = lang === 'pt' ? 'pt-PT' : 'en-IE';
   const v = Math.abs(cents) / 100;
-  return (cents < 0 ? '\u2212' : '') + CURRENCY + (dec ? nf.format(v) : nf0.format(Math.round(v)));
+  const s = new Intl.NumberFormat(loc, {
+    minimumFractionDigits: dec ? 2 : 0,
+    maximumFractionDigits: dec ? 2 : 0,
+  }).format(dec ? v : Math.round(v));
+  return (cents < 0 ? '\u2212' : '') + CURRENCY + s;
 }
 
-export function dayLabel(dateIso: string, now = new Date()) {
-  const today = now.toISOString().slice(0, 10);
-  const y = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).toISOString().slice(0, 10);
-  if (dateIso === today) return 'Today';
-  if (dateIso === y) return 'Yesterday';
-  const [, m, d] = dateIso.split('-');
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  return parseInt(d, 10) + ' ' + months[parseInt(m, 10) - 1];
+export function dayLabel(dateIso: string, lang: Lang, now = new Date()) {
+  const t = dateIso === isoLocal(now);
+  const y = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  if (t) return lang === 'pt' ? 'Hoje' : 'Today';
+  if (dateIso === isoLocal(y)) return lang === 'pt' ? 'Ontem' : 'Yesterday';
+  const [yy, m, d] = dateIso.split('-').map(Number);
+  return new Date(yy, m - 1, d).toLocaleDateString(lang === 'pt' ? 'pt-PT' : 'en-IE', { day: 'numeric', month: 'short' });
+}
+
+function isoLocal(d: Date) {
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return d.getFullYear() + '-' + m + '-' + day;
 }

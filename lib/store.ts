@@ -2,13 +2,13 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { Ledger } from './types';
-import { seed } from './data';
+import { emptyLedger } from './data';
 
-const KEY = 'ledger.mvp.v1';
+const KEY = 'ledger.mvp.v2';
 
 /**
- * Client-side persistence for the MVP. Swap this hook for TanStack Query calls
- * against /api/* when the Postgres ledger lands — the component tree does not change.
+ * One workspace per browser. Swap this hook for TanStack Query calls against
+ * /api/* when accounts land — the component tree does not change.
  */
 export function useLedger() {
   const [data, setData] = useState<Ledger | null>(null);
@@ -18,11 +18,11 @@ export function useLedger() {
     try {
       const raw = window.localStorage.getItem(KEY);
       if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && Array.isArray(parsed.cats) && Array.isArray(parsed.tx)) next = parsed;
+        const p = JSON.parse(raw);
+        if (p && p.v === 2 && Array.isArray(p.cats)) next = p;
       }
     } catch {}
-    setData(next ?? seed());
+    setData(next ?? emptyLedger());
   }, []);
 
   const update = useCallback((fn: (draft: Ledger) => void) => {
@@ -37,7 +37,7 @@ export function useLedger() {
 
   const reset = useCallback(() => {
     try { window.localStorage.removeItem(KEY); } catch {}
-    setData(seed());
+    setData(emptyLedger());
   }, []);
 
   return { data, update, reset };

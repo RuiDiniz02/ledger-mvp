@@ -1,4 +1,4 @@
-import type { Category, CatState, Ledger, Tx } from './types';
+import type { Category, CatState, Kind, Ledger, MarkKind, MonthBudget } from './types';
 
 export const PALETTE = [
   { c: '#6c7ff2', cl: '#a3b0ff', cd: '#4757c9' },
@@ -11,7 +11,7 @@ export const PALETTE = [
   { c: '#7f8aa3', cl: '#b7c0d2', cd: '#59637a' },
 ];
 
-export const MARKS = ['circle', 'ring', 'diamond', 'square', 'plus', 'stack', 'bar', 'dot'] as const;
+export const MARKS: MarkKind[] = ['circle', 'ring', 'diamond', 'square', 'plus', 'stack', 'bar', 'dot'];
 
 export function iso(d: Date): string {
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -19,94 +19,83 @@ export function iso(d: Date): string {
   return d.getFullYear() + '-' + m + '-' + day;
 }
 
-export function monthMeta(now = new Date()) {
-  const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const day = now.getDate();
-  return {
-    day,
-    days,
-    elapsed: day / days,
-    daysLeft: Math.max(1, days - day + 1),
-    key: iso(now).slice(0, 7),
-    label: now.toLocaleDateString('en-IE', { month: 'long', year: 'numeric' }),
-  };
+export const ymOf = (dateIso: string) => dateIso.slice(0, 7);
+export const ymNow = () => iso(new Date()).slice(0, 7);
+
+export function shiftYm(ym: string, delta: number) {
+  const [y, m] = ym.split('-').map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return iso(d).slice(0, 7);
 }
 
-function dayOf(n: number, now = new Date()) {
-  const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  return iso(new Date(now.getFullYear(), now.getMonth(), Math.min(Math.max(1, n), days)));
+export function ymLabel(ym: string, lang: string) {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString(lang === 'pt' ? 'pt-PT' : 'en-IE', { month: 'long', year: 'numeric' });
 }
 
-export function seed(now = new Date()): Ledger {
-  const p = (i: number) => PALETTE[i];
-  const cats: Category[] = [
-    { id: 'bills', name: 'Fixed Bills', short: 'Bills', kind: 'fixed', budget: 125000, mark: 'bar', ...p(0) },
-    { id: 'grocery', name: 'Groceries', short: 'Groceries', kind: 'variable', budget: 48000, mark: 'circle', ...p(1) },
-    { id: 'dining', name: 'Dining & Leisure', short: 'Dining', kind: 'variable', budget: 30000, mark: 'ring', ...p(2) },
-    { id: 'transport', name: 'Transport', short: 'Transport', kind: 'variable', budget: 14000, mark: 'diamond', ...p(3) },
-    { id: 'invest', name: 'Investments', short: 'Invest', kind: 'fixed', budget: 60000, mark: 'stack', ...p(4) },
-    { id: 'emerg', name: 'Emergency Fund', short: 'Emergency', kind: 'fixed', budget: 25000, mark: 'dot', ...p(5) },
-    { id: 'health', name: 'Health', short: 'Health', kind: 'variable', budget: 8000, mark: 'plus', ...p(6) },
-    { id: 'subs', name: 'Subscriptions', short: 'Subs', kind: 'fixed', budget: 10000, mark: 'square', ...p(7) },
-  ];
-  const rows: Array<[string, number, number, string, boolean]> = [
-    ['bills', 95000, 1, 'Rent', true],
-    ['bills', 13000, 3, 'Electricity + water', true],
-    ['bills', 10000, 2, 'Fiber', true],
-    ['invest', 60000, 1, 'Index fund DCA', false],
-    ['emerg', 25000, 1, 'Auto-transfer', false],
-    ['grocery', 6240, 2, 'Weekly shop', true],
-    ['grocery', 4810, 5, 'Market', true],
-    ['grocery', 3375, 6, 'Top-up', false],
-    ['grocery', 6975, 8, 'Weekly shop', true],
-    ['dining', 4000, 2, 'Cinema + drinks', true],
-    ['dining', 2850, 3, 'Sushi', false],
-    ['dining', 1240, 4, 'Lunch', false],
-    ['dining', 9600, 5, 'Concert tickets', true],
-    ['dining', 1860, 6, 'Bar', false],
-    ['dining', 4200, 7, 'Brunch', true],
-    ['dining', 7450, 9, 'Birthday dinner', true],
-    ['transport', 2200, 2, 'Metro pass', false],
-    ['transport', 1600, 6, 'Fuel', true],
-    ['subs', 1099, 1, 'Music streaming', true],
-    ['subs', 799, 1, 'Cloud storage', false],
-    ['subs', 2499, 4, 'Training app', false],
-  ];
-  const today = now.getDate();
-  const tx: Tx[] = rows
-    .filter((r) => r[2] <= today)
-    .map((r, i) => ({
-      id: 'sx' + i,
-      cat: r[0],
-      amount: r[1],
-      date: dayOf(r[2], now),
-      note: r[3],
-      scope: r[4] ? 'split' : 'mine',
-      pct: r[4] ? 50 : 100,
-      paidBy: 'me',
-      source: 'manual',
-    }));
-  return { income: 410000, ceiling: 320000, cats, tx };
+/** Day-of-month context, but only for the month actually being viewed. */
+export function monthMeta(ym: string, now = new Date()) {
+  const [y, m] = ym.split('-').map(Number);
+  const days = new Date(y, m, 0).getDate();
+  const isCurrent = ym === iso(now).slice(0, 7);
+  const past = ym < iso(now).slice(0, 7);
+  const day = isCurrent ? now.getDate() : past ? days : 0;
+  return { day, days, isCurrent, past, daysLeft: Math.max(1, days - day + 1) };
 }
 
-export const spentBy = (l: Ledger, catId: string) =>
-  l.tx.filter((t) => t.cat === catId).reduce((a, t) => a + t.amount, 0);
+export function emptyLedger(): Ledger {
+  return { v: 2, workspace: '', lang: 'en', onboarded: false, cats: [], months: {}, tx: [] };
+}
 
-export const totalSpent = (l: Ledger) => l.tx.reduce((a, t) => a + t.amount, 0);
-export const allocated = (l: Ledger) => l.cats.reduce((a, c) => a + c.budget, 0);
+/** Suggested starter categories offered during setup. Everything stays editable. */
+export const STARTERS: Array<{ key: string; en: string; pt: string; kind: Kind; ci: number; mark: MarkKind }> = [
+  { key: 'bills', en: 'Fixed Bills', pt: 'Contas Fixas', kind: 'fixed', ci: 0, mark: 'bar' },
+  { key: 'grocery', en: 'Groceries', pt: 'Supermercado', kind: 'variable', ci: 1, mark: 'circle' },
+  { key: 'dining', en: 'Dining & Leisure', pt: 'Restaurantes e Lazer', kind: 'variable', ci: 2, mark: 'ring' },
+  { key: 'transport', en: 'Transport', pt: 'Transportes', kind: 'variable', ci: 3, mark: 'diamond' },
+  { key: 'invest', en: 'Investments', pt: 'Investimentos', kind: 'fixed', ci: 4, mark: 'stack' },
+  { key: 'emerg', en: 'Emergency Fund', pt: 'Fundo de Emergência', kind: 'fixed', ci: 5, mark: 'dot' },
+  { key: 'health', en: 'Health', pt: 'Saúde', kind: 'variable', ci: 6, mark: 'plus' },
+  { key: 'subs', en: 'Subscriptions', pt: 'Subscrições', kind: 'fixed', ci: 7, mark: 'square' },
+];
 
-/** Warning model: 80% (configurable) then 100%. Fixed categories read as funded, not overspent. */
-export function catState(cat: Category, spent: number, warnAt = 80): CatState {
-  const pct = cat.budget > 0 ? spent / cat.budget : 0;
+export function makeCategory(name: string, kind: Kind, ci: number, index: number): Category {
+  return { id: 'c' + Date.now().toString(36) + index, name, kind, mark: MARKS[index % MARKS.length], ...PALETTE[ci % PALETTE.length] };
+}
+
+/** Returns the budget for a month, seeding it from the most recent earlier month. */
+export function monthBudget(l: Ledger, ym: string): MonthBudget {
+  if (l.months[ym]) return l.months[ym];
+  const prev = Object.keys(l.months).filter((k) => k < ym).sort().pop();
+  if (prev) return { ceiling: l.months[prev].ceiling, targets: { ...l.months[prev].targets } };
+  return { ceiling: 0, targets: {} };
+}
+
+/** Call inside update() before writing month-scoped values. */
+export function ensureMonth(draft: Ledger, ym: string) {
+  if (!draft.months[ym]) draft.months[ym] = monthBudget(draft, ym);
+  return draft.months[ym];
+}
+
+export const txOfMonth = (l: Ledger, ym: string) => l.tx.filter((t) => ymOf(t.date) === ym);
+export const spentBy = (l: Ledger, ym: string, catId: string) =>
+  txOfMonth(l, ym).filter((t) => t.cat === catId).reduce((a, t) => a + t.amount, 0);
+export const totalSpent = (l: Ledger, ym: string) => txOfMonth(l, ym).reduce((a, t) => a + t.amount, 0);
+export const allocated = (b: MonthBudget, cats: Category[]) =>
+  cats.reduce((a, c) => a + (b.targets[c.id] || 0), 0);
+
+/** Warning model: 80% (configurable) then 100%. Fixed categories read as funded. */
+export function catState(kind: Kind, target: number, spent: number, warnAt = 80): CatState {
+  if (target <= 0) return spent > 0 ? 'empty' : 'ok';
+  const pct = spent / target;
   if (pct > 1) return 'over';
-  if (cat.kind === 'fixed') return pct >= 0.995 ? 'funded' : 'ok';
+  if (kind === 'fixed') return pct >= 0.995 ? 'funded' : 'ok';
   if (pct >= warnAt / 100) return 'near';
   return 'ok';
 }
 
-/** Amount owed to you by a partner across every split expense you paid. */
-export function unsettled(l: Ledger) {
-  return l.tx
+export function unsettled(l: Ledger, ym: string) {
+  return txOfMonth(l, ym)
     .filter((t) => t.scope === 'split' && t.paidBy === 'me')
     .reduce((a, t) => a + Math.round((t.amount * (100 - t.pct)) / 100), 0);
 }
