@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: Figtree, ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "DM Mono", ui-monospace, monospace;
+  --color-ink: #16242a;
+  --color-deep: #12303a;
+  --color-muted: #8b969b;
+  --color-canvas: #f2f5f6;
+  --color-accent: #17a8c0;
+}
+
+html, body { margin: 0; padding: 0; }
+body { background: #e9ecee; color: #16242a; -webkit-font-smoothing: antialiased; }
+* { box-sizing: border-box; }
+input[type="range"] { height: 20px; }
+::-webkit-scrollbar { width: 0; height: 0; }
+a { color: #0b7b8f; text-decoration: none; }
+a:hover { color: #17a8c0; }
+
+@keyframes sheetUp { from { transform: translateY(100%);} to { transform: translateY(0);} }
+@keyframes fadeIn { from { opacity: 0;} to { opacity: 1;} }
+@keyframes toastUp { from { transform: translateY(20px); opacity: 0;} to { transform: translateY(0); opacity: 1;} }
+@keyframes pop { from { transform: scale(.95); opacity: 0;} to { transform: scale(1); opacity: 1;} }
+.anim-sheet { animation: sheetUp .34s cubic-bezier(.2,.9,.3,1) both; }
+.anim-fade { animation: fadeIn .2s ease-out both; }
+.anim-toast { animation: toastUp .28s cubic-bezier(.2,.9,.3,1) both; }
+.anim-pop { animation: pop .25s ease-out both; }
