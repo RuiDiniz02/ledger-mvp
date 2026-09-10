@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  catHistory, catState, monthUsed, monthsUpTo, potBalance, searchTx, shiftYm, splitsOn, unsettled, used, ymOf,
+  catHistory, catState, monthSaved, monthSpent, monthUsed, monthsUpTo, potBalance, searchTx, shiftYm, splitsOn, unsettled, used, ymOf,
 } from '../data.ts';
 import { money } from '../format.ts';
 import type { Kind, Ledger, Tx } from '../types.ts';
@@ -21,16 +21,15 @@ test('used: a variable category costs only what was logged', () => {
   assert.equal(used('variable', 50000, 0), 0);
 });
 
-test('used: a fixed category costs its target even before it is logged', () => {
-  assert.equal(used('fixed', 80000, 0), 80000);
+test('used: setting a target is allocation, not spending', () => {
+  // Money planned for rent is still yours until the rent actually leaves.
+  assert.equal(used('fixed', 80000, 0), 0);
+  assert.equal(used('variable', 50000, 0), 0);
 });
 
-test('used: logging a fixed category does not charge it twice', () => {
+test('used: a fixed category costs what was actually paid', () => {
   assert.equal(used('fixed', 80000, 80000), 80000);
-  assert.equal(used('fixed', 80000, 30000), 80000);
-});
-
-test('used: a fixed category that cost more than planned counts the larger sum', () => {
+  assert.equal(used('fixed', 80000, 30000), 30000);
   assert.equal(used('fixed', 80000, 85000), 85000);
 });
 
@@ -45,8 +44,9 @@ test('catState: a pot never warns', () => {
   assert.equal(catState('saving', 10000, 999999), 'funded');
 });
 
-test('catState: a commitment reads funded, and over only when it cost more', () => {
-  assert.equal(catState('fixed', 80000, 0), 'funded');
+test('catState: a fixed bill fills up without ever "running hot"', () => {
+  assert.equal(catState('fixed', 80000, 0), 'ok');
+  assert.equal(catState('fixed', 80000, 70000), 'ok', 'no 80% warning on a bill meant to land on its number');
   assert.equal(catState('fixed', 80000, 80000), 'funded');
   assert.equal(catState('fixed', 80000, 80001), 'over');
 });
@@ -63,32 +63,45 @@ test('catState: spending with no target set is flagged, not silently ok', () => 
   assert.equal(catState('variable', 0, 0), 'ok');
 });
 
-test('monthUsed: commitments count from the 1st, so remaining is honest', () => {
+test('monthSpent: a budget you have not spent is not spending', () => {
   const l = ledger({
     cats: [cat('rent', 'fixed'), cat('food', 'variable')],
     months: { '2026-09': { ceiling: 200000, targets: { rent: 80000, food: 50000 } } },
     tx: [tx({ id: 'a', cat: 'food', amount: 1500, date: '2026-09-03' })],
   });
-  // Nothing logged for rent, but it is still owed.
-  assert.equal(monthUsed(l, '2026-09'), 80000 + 1500);
+  // 130000 is allocated across the two categories, but only 1500 has left.
+  assert.equal(monthSpent(l, '2026-09'), 1500);
+  assert.equal(monthSaved(l, '2026-09'), 0);
+  assert.equal(monthUsed(l, '2026-09'), 1500);
 });
 
-test('monthUsed: a pot withdrawal does not blow up the month', () => {
+test('monthSaved: a pot contribution leaves the money you can spend', () => {
+  const l = ledger({
+    cats: [cat('emerg', 'saving'), cat('food', 'variable')],
+    months: { '2026-09': { ceiling: 200000, targets: { emerg: 10000, food: 50000 } } },
+    tx: [tx({ id: 'a', cat: 'food', amount: 1500, date: '2026-09-03' })],
+  });
+  assert.equal(monthSaved(l, '2026-09'), 10000);
+  assert.equal(monthUsed(l, '2026-09'), 11500);
+});
+
+test('monthSpent: taking money out of a pot is not this month spending', () => {
   const l = ledger({
     cats: [cat('trip', 'saving')],
     months: { '2026-09': { ceiling: 200000, targets: { trip: 10000 } } },
     tx: [tx({ id: 'a', cat: 'trip', amount: 80000, date: '2026-09-10' })],
   });
+  assert.equal(monthSpent(l, '2026-09'), 0, 'that 800 was charged to the months that saved it');
   assert.equal(monthUsed(l, '2026-09'), 10000);
 });
 
-test('monthUsed: expenses of a deleted category still count', () => {
+test('monthSpent: expenses of a deleted category still count', () => {
   const l = ledger({
     cats: [],
     months: { '2026-09': { ceiling: 200000, targets: {} } },
     tx: [tx({ id: 'a', cat: 'gone', amount: 2500, date: '2026-09-04' })],
   });
-  assert.equal(monthUsed(l, '2026-09'), 2500);
+  assert.equal(monthSpent(l, '2026-09'), 2500);
 });
 
 test('potBalance: contributions accumulate across months', () => {
@@ -196,13 +209,14 @@ test('catHistory: returns n months, oldest first, ending on the month asked for'
   assert.equal(h[0].value, 0, 'a month before the budget existed cost nothing');
 });
 
-test('catHistory: a commitment shows its cost even in months with nothing logged', () => {
+test('catHistory: a fixed category charts what was paid, not what was planned', () => {
   const l = ledger({
     cats: [cat('rent', 'fixed')],
     months: { '2026-08': { ceiling: 0, targets: { rent: 80000 } } },
+    tx: [tx({ id: 'a', cat: 'rent', amount: 80000, date: '2026-08-02' })],
   });
   const h = catHistory(l, cat('rent', 'fixed'), '2026-09', 2);
-  assert.deepEqual(h.map((x) => x.value), [80000, 80000]);
+  assert.deepEqual(h.map((x) => x.value), [80000, 0], 'September has not been paid yet');
 });
 
 test('catHistory: a pot reports its running balance, not the monthly amount', () => {

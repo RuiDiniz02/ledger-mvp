@@ -7,7 +7,7 @@ import { useLedger } from '@/lib/store';
 import { money, dayLabel } from '@/lib/format';
 import {
   PALETTE, UNCAT_ID, allocated, catState, ensureMonth, iso, makeCategory, monthBudget, monthMeta,
-  catHistory, monthUsed, orphanTx, potBalance, searchTx, shiftYm, spentBy, txOfMonth, uid, uncatFor,
+  catHistory, monthSaved, monthSpent, orphanTx, potBalance, searchTx, shiftYm, spentBy, txOfMonth, uid, uncatFor,
   splitsOn, unsettled, used, ymLabel, ymNow, ymOf,
 } from '@/lib/data';
 import { copyBackup, parseBackup, readFile, saveBackup, summarize, type Summary } from '@/lib/backup';
@@ -152,7 +152,7 @@ export default function App() {
       virtual ? { color: '#8b969b', text: t('uncatBody'), bar: c.c }
       : pot ? { color: sp > 0 ? '#c8722a' : '#0b7b8f', text: (sp > 0 ? '−' : '+') + $(sp > 0 ? sp : target) + ' ' + t('thisMonthShort'), bar: c.c }
       : st === 'over' ? { color: '#d8365b', text: $(sp - target) + ' ' + t('overBy'), bar: '#ec6a86' }
-      : st === 'funded' ? { color: '#0b7b8f', text: t('committed'), bar: c.c }
+      : st === 'funded' ? { color: '#0b7b8f', text: t('funded'), bar: c.c }
       : st === 'near' ? { color: '#c8722a', text: pct + '% ' + t('used') + ' — ' + t('tight'), bar: '#f4874b' }
       : st === 'empty' ? { color: '#8b969b', text: t('noTarget'), bar: c.c }
       : { color: '#8b969b', text: pct + '% ' + t('used'), bar: c.c };
@@ -164,18 +164,19 @@ export default function App() {
   /** Real categories only — the uncategorised bucket has no budget to set. */
   const realCats = cats.filter((c) => !c.virtual);
   const byId = Object.fromEntries(cats.map((c) => [c.id, c]));
-  // Commitments and pot contributions count from the 1st, so this is what the
-  // month really costs — and what Remaining must be measured against.
-  const spent = monthUsed(l, ym);
+  // Spending is money that left. Saving is money put away, which is equally
+  // gone from what you can spend but is not spending. Allocation is neither.
+  const spent = monthSpent(l, ym);
+  const saved = monthSaved(l, ym);
   const alloc = allocated(mb, l.cats);
-  const remaining = mb.ceiling - spent;
+  const remaining = mb.ceiling - spent - saved;
   const varLeft = cats.filter((c) => c.kind === 'variable').reduce((a, c) => a + Math.max(0, c.target - c.spent), 0);
   const monthTx = txOfMonth(l, ym).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : a.id < b.id ? 1 : -1));
 
   let acc = 0;
   const parts: string[] = [];
   cats.filter((c) => c.cost > 0).forEach((c) => {
-    const share = Math.min(100 - acc, (c.cost / Math.max(mb.ceiling || spent, spent, 1)) * 100);
+    const share = Math.min(100 - acc, (c.cost / Math.max(mb.ceiling || spent + saved, spent + saved, 1)) * 100);
     parts.push(c.c + ' ' + acc.toFixed(2) + '% ' + (acc + share).toFixed(2) + '%');
     acc += share;
   });
@@ -382,8 +383,6 @@ export default function App() {
     if (total > draftCat.target) {
       return { over: true, text: t('willExceed', { name: draftCat.name, amount: $(total - draftCat.target) }) };
     }
-    // A commitment is already paid for out of this month's ceiling.
-    if (draftCat.kind === 'fixed') return { over: false, text: t('alreadyCommitted') };
     return { over: false, text: $(draftCat.target - total) + ' ' + t('leftAfter', { name: draftCat.name }) };
   })();
 
@@ -459,7 +458,7 @@ export default function App() {
                     <div className='grid h-28 w-28 shrink-0 place-items-center rounded-full' style={{ background: donut }}>
                       <div className='grid h-[78px] w-[78px] place-items-center rounded-full bg-deep text-center'>
                         <div>
-                          <div className='font-mono text-[21px] tracking-tight'>{Math.round((spent / mb.ceiling) * 100)}%</div>
+                          <div className='font-mono text-[21px] tracking-tight'>{Math.round(((spent + saved) / mb.ceiling) * 100)}%</div>
                           <div className='mt-[5px] text-[8.5px] font-semibold uppercase tracking-[0.1em] text-white/50'>{t('spent')}</div>
                         </div>
                       </div>
@@ -478,6 +477,12 @@ export default function App() {
                           <div className='text-[9.5px] font-semibold uppercase tracking-[0.1em] text-white/50'>{t('spent')}</div>
                           <div className='mt-1 font-mono text-sm text-white/90'>{$(spent)}</div>
                         </div>
+                        {saved > 0 && (
+                          <div>
+                            <div className='text-[9.5px] font-semibold uppercase tracking-[0.1em] text-white/50'>{t('savedLabel')}</div>
+                            <div className='mt-1 font-mono text-sm text-[#7fd9e6]'>{$(saved)}</div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -696,7 +701,7 @@ export default function App() {
               <div className={CARD + ' rounded-[22px] p-[18px]'}>
                 <div className='flex items-end justify-between'>
                   <div>
-                    <div className={LABEL}>{detCat.pot ? t('potBalanceLabel') : detCat.kind === 'fixed' ? t('committedLabel') : t('spent')}</div>
+                    <div className={LABEL}>{detCat.pot ? t('potBalanceLabel') : t('spent')}</div>
                     <div className='mt-1.5 font-mono text-[28px] tracking-[-0.03em] text-ink'>{$(detCat.pot ? detCat.balance : detCat.cost)}</div>
                   </div>
                   {!detCat.virtual && (

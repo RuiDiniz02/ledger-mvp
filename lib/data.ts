@@ -105,28 +105,26 @@ export const allocated = (b: MonthBudget, cats: Category[]) =>
   cats.reduce((a, c) => a + (b.targets[c.id] || 0), 0);
 
 /**
- * What a category actually takes out of the month's ceiling.
+ * What a category takes out of the month's ceiling.
  *
- * A fixed category is owed whether or not you have logged it, so it counts
- * from the 1st; logging it does not double it, and logging *more* than the
- * target (the rent went up) counts the larger amount. A saving pot costs the
- * month exactly its contribution — money taken back out of the pot was
- * budgeted in an earlier month and must not be charged twice.
+ * Setting a target is allocation, not spending: money planned for groceries or
+ * rent is still yours until it actually leaves, so those cost what was logged.
+ * A pot is the exception. Its contribution really does leave the money you can
+ * spend, so it counts from the 1st. Money taken back *out* of a pot never
+ * counts, because it was already charged to the month that saved it.
  */
 export function used(kind: Kind, target: number, spent: number): number {
-  if (kind === 'fixed') return Math.max(target, spent);
-  if (kind === 'saving') return Math.max(0, target);
-  return spent;
+  return kind === 'saving' ? Math.max(0, target) : spent;
 }
 
 /** Warning model: variable warns at 80% (configurable) then 100%. */
 export function catState(kind: Kind, target: number, spent: number, warnAt = 80): CatState {
   if (kind === 'saving') return target > 0 ? 'funded' : spent > 0 ? 'empty' : 'ok';
   if (target <= 0) return spent > 0 ? 'empty' : 'ok';
-  // A commitment is funded by definition; only paying more than planned is news.
-  if (kind === 'fixed') return spent > target ? 'over' : 'funded';
   const pct = spent / target;
   if (pct > 1) return 'over';
+  // A fixed bill is meant to land on its number, so filling up is not a warning.
+  if (kind === 'fixed') return pct >= 0.995 ? 'funded' : 'ok';
   if (pct >= warnAt / 100) return 'near';
   return 'ok';
 }
@@ -154,20 +152,24 @@ export function potBalance(l: Ledger, catId: string, ym: string): number {
   return paidIn - takenOut;
 }
 
-/** What the whole month costs: committed plus actually spent, never both. */
-export function monthUsed(l: Ledger, ym: string): number {
-  const b = monthBudget(l, ym);
-  const known = new Set(l.cats.map((c) => c.id));
-  const fromCats = l.cats.reduce(
-    (a, c) => a + used(c.kind, b.targets[c.id] || 0, spentBy(l, ym, c.id)),
-    0
-  );
-  // Expenses whose category was deleted still left your account.
-  const fromOrphans = txOfMonth(l, ym)
-    .filter((t) => !known.has(t.cat))
+/** Money that actually left this month, on real expenses. Pots are not spending. */
+export function monthSpent(l: Ledger, ym: string): number {
+  const known = new Set(l.cats.filter((c) => c.kind === 'saving').map((c) => c.id));
+  return txOfMonth(l, ym)
+    .filter((t) => !known.has(t.cat)) // a withdrawal is last month's money, not this month's
     .reduce((a, t) => a + t.amount, 0);
-  return fromCats + fromOrphans;
 }
+
+/** Money put away this month, which is gone from what you can spend. */
+export function monthSaved(l: Ledger, ym: string): number {
+  const b = monthBudget(l, ym);
+  return l.cats
+    .filter((c) => c.kind === 'saving')
+    .reduce((a, c) => a + Math.max(0, b.targets[c.id] || 0), 0);
+}
+
+/** Everything the month takes out of the ceiling: spent plus saved. */
+export const monthUsed = (l: Ledger, ym: string) => monthSpent(l, ym) + monthSaved(l, ym);
 
 export function unsettled(l: Ledger, ym: string) {
   return txOfMonth(l, ym)
