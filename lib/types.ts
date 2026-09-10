@@ -57,6 +57,11 @@ export interface Ledger {
   tx: Tx[];
   /** ISO timestamp of the last backup the user exported, for the reminder in Account. */
   lastExport?: string;
+  /**
+   * Whether the shared-expense controls are shown. Undefined means "decide from
+   * the data", so anyone already splitting keeps seeing them.
+   */
+  splits?: boolean;
 }
 
 export type CatState = 'ok' | 'near' | 'over' | 'funded' | 'empty';

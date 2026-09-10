@@ -204,3 +204,6 @@ export function searchTx(l: Ledger, query: string): Tx[] {
   const names = new Map(l.cats.map((c) => [c.id, fold(c.name)]));
   return l.tx.filter((t) => fold(t.note).includes(q) || (names.get(t.cat) || '').includes(q));
 }
+
+/** Shared expenses are off until asked for, but never hidden from someone using them. */
+export const splitsOn = (l: Ledger) => l.splits ?? l.tx.some((t) => t.scope === 'split');

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  catHistory, catState, monthUsed, monthsUpTo, potBalance, searchTx, shiftYm, unsettled, used, ymOf,
+  catHistory, catState, monthUsed, monthsUpTo, potBalance, searchTx, shiftYm, splitsOn, unsettled, used, ymOf,
 } from '../data.ts';
 import { money } from '../format.ts';
 import type { Kind, Ledger, Tx } from '../types.ts';
@@ -242,4 +242,19 @@ test('search: an empty query matches nothing rather than everything', () => {
   const l = ledger({ tx: [tx({ id: 'a', cat: 'x', amount: 1, date: '2026-09-02', note: 'z' })] });
   assert.deepEqual(searchTx(l, ''), []);
   assert.deepEqual(searchTx(l, '   '), []);
+});
+
+test('splitsOn: off for a new ledger, on for anyone already splitting', () => {
+  assert.equal(splitsOn(ledger()), false);
+  assert.equal(
+    splitsOn(ledger({ tx: [tx({ id: 'a', cat: 'x', amount: 1, date: '2026-09-01', scope: 'split', pct: 50 })] })),
+    true,
+    'existing split data must not vanish'
+  );
+});
+
+test('splitsOn: an explicit choice always wins over the guess', () => {
+  const withSplit = [tx({ id: 'a', cat: 'x', amount: 1, date: '2026-09-01', scope: 'split', pct: 50 })];
+  assert.equal(splitsOn(ledger({ splits: false, tx: withSplit })), false);
+  assert.equal(splitsOn(ledger({ splits: true })), true);
 });

@@ -8,7 +8,7 @@ import { money, dayLabel } from '@/lib/format';
 import {
   PALETTE, UNCAT_ID, allocated, catState, ensureMonth, iso, makeCategory, monthBudget, monthMeta,
   catHistory, monthUsed, orphanTx, potBalance, searchTx, shiftYm, spentBy, txOfMonth, uid, uncatFor,
-  unsettled, used, ymLabel, ymNow, ymOf,
+  splitsOn, unsettled, used, ymLabel, ymNow, ymOf,
 } from '@/lib/data';
 import { copyBackup, parseBackup, readFile, saveBackup, summarize, type Summary } from '@/lib/backup';
 import { makeT } from '@/lib/i18n';
@@ -194,6 +194,7 @@ export default function App() {
   const go = (s: Screen) => { tap('light'); setSheet(null); setScreen(s); setDetail(null); };
   const closeSheet = () => { tap('back'); setSheet(null); };
   const chip = (on: boolean) => (on ? 'bg-deep text-white' : 'bg-white text-[#5b6a70]');
+  const sharing = splitsOn(l);
   const kindLabel = (k: Kind) => (k === 'fixed' ? t('fixed') : k === 'saving' ? t('saving') : t('variable'));
   const monthInitial = (k: string) => ymLabel(k, lang).slice(0, 3);
   const nTx = (n: number) => n + ' ' + t(n === 1 ? 'unitTx' : 'unitTxs');
@@ -570,7 +571,7 @@ export default function App() {
                 )}
               </div>
               {/* The split filters only mean anything within one month. */}
-              {!hits && (
+              {!hits && sharing && (
                 <div className='flex gap-[7px]'>
                   {([['all', t('allActivity')], ['mine', t('justMe')], ['split', t('split5050')]] as const).map(([k, label]) => (
                     <button key={k} onClick={() => setFilter(k as 'all' | 'mine' | 'split')} className={'flex h-8 items-center rounded-full border border-black/[0.09] px-3.5 text-[12.5px] font-semibold ' + chip(filter === k)}>{label}</button>
@@ -759,6 +760,18 @@ export default function App() {
                     <button key={k} onClick={() => { tap('light'); update((d) => { d.lang = k; }); }} className={'h-[46px] flex-1 rounded-2xl text-[14px] font-semibold ' + (lang === k ? 'bg-deep text-white' : 'bg-canvas text-[#5b6a70]')}>{k === 'en' ? 'English' : 'Português'}</button>
                   ))}
                 </div>
+                <div className={LABEL + ' mt-5'}>{t('sharingLabel')}</div>
+                <div className='mt-2.5 flex items-center gap-3'>
+                  <div className='flex-1 text-[12px] leading-snug text-[#8b969b]'>{t('sharingBody')}</div>
+                  <button
+                    onClick={() => { const v = !sharing; tap('light'); update((d) => { d.splits = v; }); }}
+                    aria-pressed={sharing}
+                    className='relative h-[32px] w-[56px] shrink-0 rounded-full transition-colors'
+                    style={{ background: sharing ? '#12303a' : '#dfe4e6' }}
+                  >
+                    <span className='absolute top-[3px] h-[26px] w-[26px] rounded-full bg-white shadow-[0_2px_4px_rgba(22,36,42,.2)] transition-[left] duration-200 ease-out' style={{ left: sharing ? '27px' : '3px' }} />
+                  </button>
+                </div>
                 <div className={LABEL + ' mt-5'}>{t('feedback')}</div>
                 <div className='mt-2.5 flex items-center gap-3'>
                   <div className='flex-1 text-[12px] leading-snug text-[#8b969b]'>{t('feedbackBody')}</div>
@@ -772,7 +785,7 @@ export default function App() {
                 </div>
               </div>
 
-              <div className='mt-2.5 rounded-[22px] bg-deep p-[18px] text-white'>
+              {sharing && <div className='mt-2.5 rounded-[22px] bg-deep p-[18px] text-white'>
                 <div className='flex items-end justify-between'>
                   <div>
                     <div className='text-[9.5px] font-semibold uppercase tracking-[0.11em] text-white/50'>{t('unsettledTitle')}</div>
@@ -780,7 +793,7 @@ export default function App() {
                   </div>
                   <div className='max-w-[140px] text-right text-[11.5px] text-white/55'>{t('unsettledBody')}</div>
                 </div>
-              </div>
+              </div>}
 
               <div className={LABEL + ' mb-2.5 mt-6'}>{t('onThisDevice')}</div>
               <div className={CARD + ' rounded-[22px] p-[18px]'}>
@@ -933,14 +946,14 @@ export default function App() {
                   <input type='date' value={draft.date} max={iso(new Date())} onChange={(e) => { if (e.target.value) setDraft((d) => ({ ...d, date: e.target.value })); }} className='h-10 flex-1 rounded-xl border border-black/[0.07] bg-white px-2.5 font-mono text-[12.5px] text-ink outline-none' />
                 </div>
 
-                <div className={LABEL + ' mb-2 mt-3'}>{t('splitLabel')}</div>
-                <div className='flex gap-2'>
+                {sharing && <div className={LABEL + ' mb-2 mt-3'}>{t('splitLabel')}</div>}
+                {sharing && <div className='flex gap-2'>
                   {([['mine', t('justMe')], ['half', t('split5050')], ['custom', t('customPct')]] as const).map(([k, label]) => {
                     const on = k === 'mine' ? draft.scope === 'mine' : k === 'half' ? draft.scope === 'split' && draft.pct === 50 : draft.scope === 'split' && draft.pct !== 50;
                     return <button key={k} onClick={() => { tap('light'); setDraft((d) => (k === 'mine' ? { ...d, scope: 'mine' } : { ...d, scope: 'split', pct: k === 'half' ? 50 : d.pct === 50 ? 60 : d.pct })); }} className={'h-10 flex-1 rounded-xl border border-black/[0.07] text-[12.5px] font-semibold ' + chip(on)}>{label}</button>;
                   })}
-                </div>
-                {draft.scope === 'split' && (
+                </div>}
+                {sharing && draft.scope === 'split' && (
                   <div className='mt-2 flex items-center gap-3 rounded-2xl border border-black/[0.06] bg-white p-3'>
                     <button onClick={() => { tap('light'); setDraft((d) => ({ ...d, pct: Math.max(0, d.pct - 5) })); }} aria-label='−5%' className='grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-canvas'>
                       <div className='h-[2.5px] w-2.5 rounded-sm bg-ink' />

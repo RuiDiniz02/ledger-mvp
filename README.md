@@ -46,9 +46,12 @@ Then open it, let the worker register, and use your browser's offline mode or st
 
 ## Product decisions baked in
 
-- **Calendar month, no rollover.** Budgets reset on the 1st.
-- **Warnings at 80% then 100%** (`WARN_AT` in `components/App.tsx`). Fixed categories read as *funded* rather than overspent.
-- **Per-expense splits.** Every transaction stores `scope`, `pct` (your share) and `paidBy`, so adding a second member later is a join, not a migration. `unsettled()` in `lib/data.ts` already computes the settle-up balance.
+- **Three kinds of category**, because a monthly budget has three kinds of money in it. `used()` in `lib/data.ts` is the whole rule:
+  - `variable` costs what you logged, and warns at 80% then 100% (`WARN_AT` in `components/App.tsx`).
+  - `fixed` is a commitment. It costs `max(target, spent)`, so it leaves the budget on the 1st whether or not you log it, logging it does not charge it twice, and paying more than planned counts the larger sum. This is why there is no separate recurring-expenses feature: a fixed category already *is* the recurring expense, and building both would be two machines for one job.
+  - `saving` is a pot. The target is a monthly contribution that accumulates across months; logging an expense takes money back out. The month is charged the contribution only, never the withdrawal, because the withdrawal was budgeted earlier. `potBalance()` answers "how much is in the emergency fund", which no monthly figure can.
+- **Calendar month, no rollover** for variable and fixed. Pots are the deliberate exception: carrying over is the entire point of a pot.
+- **Per-expense splits, off by default.** Every transaction still stores `scope`, `pct` (your share) and `paidBy`, so adding a second member later is a join, not a migration. The controls stay hidden until someone turns them on in Account, because until there is a second person the settle-up balance is a number nobody can settle. `splitsOn()` shows them anyway for anyone whose ledger already has split rows.
 - **Money is integer minor units (cents)** everywhere. Never floats.
 - **Append-only intent.** Each row carries `source: 'manual' | 'bank' | 'recurring'` so a bank import cannot overwrite hand-entered history. Editing an expense keeps its `id`, `paidBy` and `source`.
 - **Data is never silently dropped.** `lib/store.ts` migrates a stored ledger forward through `MIGRATIONS` on load; anything genuinely unreadable is parked under `ledger.mvp.unreadable` instead of being discarded, so it can still be recovered by hand.
@@ -79,12 +82,20 @@ Writes are coalesced on a 150 ms timer and flushed on `pagehide`/`visibilitychan
     components/Onboarding.tsx first-run setup
     components/ServiceWorker.tsx registers public/sw.js in production only
     lib/types.ts             Category, Tx, Ledger, SCHEMA
-    lib/data.ts             seed data, month maths, warning model, split maths
+    lib/data.ts             month maths, the three kinds, pot balances, history, search
     lib/store.ts            useLedger() — persistence, migrations, storage health
     lib/backup.ts           export / import / validate
     lib/format.ts           currency + date formatting
     lib/i18n.ts             English + Portuguese strings
     lib/tap.ts              haptics and click feedback
+
+## Tests
+
+    npm test
+
+Node 24 runs the TypeScript directly, so there is no test dependency to install. `test/resolve-ts.mjs` only teaches Node's resolver the extensionless imports Next uses.
+
+The suite covers the money maths and the migrations, in that order of importance. A migration bug is the one failure here with no way back: it corrupts real data on someone's phone, and there is no server holding a copy.
 
 ## Changing the schema
 
