@@ -36,14 +36,19 @@ export interface MonthBudget {
   targets: Record<string, number>;
 }
 
+/** Bump on every shape change and add a step to MIGRATIONS in lib/store.ts. */
+export const SCHEMA = 3;
+
 export interface Ledger {
-  v: 2;
+  v: number;
   workspace: string;
   lang: Lang;
   onboarded: boolean;
   cats: Category[];
   months: Record<string, MonthBudget>;
   tx: Tx[];
+  /** ISO timestamp of the last backup the user exported, for the reminder in Account. */
+  lastExport?: string;
 }
 
 export type CatState = 'ok' | 'near' | 'over' | 'funded' | 'empty';

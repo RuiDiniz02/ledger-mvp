@@ -1,6 +1,8 @@
 # Ledger — personal finance MVP
 
-Next.js 15 (App Router) + React 19 + Tailwind CSS v4 + TypeScript. No backend yet: the whole ledger lives in `localStorage`, so it deploys to Vercel as a static-ish client app with zero environment variables.
+Next.js 16 (App Router) + React 19 + Tailwind CSS v4 + TypeScript. No backend yet: the whole ledger lives in `localStorage`, so it deploys to Vercel as a static-ish client app with zero environment variables.
+
+It is an installable PWA. Added to a phone's home screen it runs full-screen, starts with no network, and keeps every expense on that device — which is the point while the idea is still being tested with real people.
 
 ## Run locally
 
@@ -31,28 +33,66 @@ Same idea, no local tooling needed:
 
 Netlify *Drop* (dragging a folder onto the dashboard) will not work here — it expects an already-built site, and building needs Node. If you specifically want a drag-and-droppable folder, add `output: 'export'` to `next.config.mjs`, run `npm run build` once, and drop the generated `out/` folder. This app is fully client-side, so a static export behaves identically.
 
+**Serve it over HTTPS.** Service workers and `navigator.storage.persist()` only run in a secure context, so on plain HTTP the app will not install and will not work offline. Vercel and Netlify both give you HTTPS by default.
+
+## Testing the installed app locally
+
+`npm run dev` skips the service worker on purpose, so HMR is not cached. To exercise install and offline behaviour:
+
+    npm run build
+    npx next start
+
+Then open it, let the worker register, and use your browser's offline mode or stop the server and reload.
+
 ## Product decisions baked in
 
 - **Calendar month, no rollover.** Budgets reset on the 1st.
 - **Warnings at 80% then 100%** (`WARN_AT` in `components/App.tsx`). Fixed categories read as *funded* rather than overspent.
 - **Per-expense splits.** Every transaction stores `scope`, `pct` (your share) and `paidBy`, so adding a second member later is a join, not a migration. `unsettled()` in `lib/data.ts` already computes the settle-up balance.
 - **Money is integer minor units (cents)** everywhere. Never floats.
-- **Append-only intent.** Each row carries `source: 'manual' | 'bank' | 'recurring'` so a bank import cannot overwrite hand-entered history.
+- **Append-only intent.** Each row carries `source: 'manual' | 'bank' | 'recurring'` so a bank import cannot overwrite hand-entered history. Editing an expense keeps its `id`, `paidBy` and `source`.
+- **Data is never silently dropped.** `lib/store.ts` migrates a stored ledger forward through `MIGRATIONS` on load; anything genuinely unreadable is parked under `ledger.mvp.unreadable` instead of being discarded, so it can still be recovered by hand.
+- **Deleting a category asks what happens to its expenses** — move them, leave them uncategorised, or delete them too. Orphans get an *Uncategorised* card so the month total always equals the sum of what is on screen.
+
+## Storage on the device
+
+There is no server, so the only copy of someone's history is the one on their phone. Three things protect it:
+
+1. **`navigator.storage.persist()`** is requested on load, which stops mobile Safari clearing script-writable storage for a site that has not been opened in a while.
+2. **Installing to the home screen** is prompted for in Account (a real prompt on Android, written instructions on iOS, which has no API for it). Installed storage is much less likely to be evicted.
+3. **Export and import** in Account. Export goes through the share sheet on a phone — the only route that reaches Files or iCloud on iOS — and falls back to a download, then to copying JSON as text. Imports are migrated like stored data, so an old backup still restores, and are previewed before they replace anything.
+
+Writes are coalesced on a 150 ms timer and flushed on `pagehide`/`visibilitychange`, so dragging a target slider does not hammer `localStorage`.
 
 ## Files
 
-    app/layout.tsx        fonts, metadata, viewport
-    app/page.tsx          renders <App />
-    app/globals.css       Tailwind v4 theme tokens + keyframes
-    components/App.tsx    all screens, sheets, tab bar
-    components/Icons.tsx  clay category tiles + tab icons
-    lib/types.ts          Category, Tx, Ledger
-    lib/data.ts           seed data, month maths, warning model, split maths
-    lib/store.ts          useLedger() — localStorage persistence
-    lib/format.ts         currency + date formatting
+    app/layout.tsx           self-hosted fonts, metadata, viewport, PWA meta
+    app/manifest.ts          web app manifest
+    app/icon.png             favicon
+    app/apple-icon.png       iOS home-screen icon
+    app/page.tsx             renders <App />
+    app/globals.css          Tailwind v4 theme tokens + keyframes
+    public/sw.js             offline shell (network-first HTML, cache-first hashed assets)
+    public/icon-*.png        manifest icons, incl. maskable
+    components/App.tsx       all screens, sheets, tab bar
+    components/Icons.tsx     clay category tiles + tab icons
+    components/Onboarding.tsx first-run setup
+    components/ServiceWorker.tsx registers public/sw.js in production only
+    lib/types.ts             Category, Tx, Ledger, SCHEMA
+    lib/data.ts             seed data, month maths, warning model, split maths
+    lib/store.ts            useLedger() — persistence, migrations, storage health
+    lib/backup.ts           export / import / validate
+    lib/format.ts           currency + date formatting
+    lib/i18n.ts             English + Portuguese strings
+    lib/tap.ts              haptics and click feedback
+
+## Changing the schema
+
+Bump `SCHEMA` in `lib/types.ts` and add a matching step to `MIGRATIONS` in `lib/store.ts`, keyed by the version you are migrating *from*. Every step must set the new `v`. Without a step, a ledger at the old version is treated as unreadable rather than upgraded.
 
 ## Next steps toward Phase 2/3
 
+0. **Sync.** The one thing testers will ask for that is not here. Export/import is the manual stand-in; real sync needs the accounts work below. Until then, a second device is a second ledger.
 1. **Postgres + Drizzle.** Tables: `users`, `households`, `household_members`, `categories`, `budgets` (per month), `transactions`, `transaction_splits`. Row-level security keyed on `household_id`.
 2. **Auth.** Supabase Auth or Clerk, where an organisation maps 1:1 to a household.
 3. **Swap the store.** Replace `useLedger()` with TanStack Query hooks against `/api/*` route handlers. Nothing in the component tree changes.

@@ -1,4 +1,24 @@
-import type { Category, CatState, Kind, Ledger, MarkKind, MonthBudget } from './types';
+import { SCHEMA, type Category, type CatState, type Kind, type Ledger, type MarkKind, type MonthBudget } from './types';
+
+/** Collision-proof even when several rows are created in the same millisecond. */
+export function uid(prefix: string): string {
+  try {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) return prefix + crypto.randomUUID().slice(0, 12);
+  } catch {}
+  return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+/**
+ * Expenses whose category was deleted are shown under this pseudo-category, so
+ * the month total always equals the sum of what is on screen.
+ */
+export const UNCAT_ID = '__uncat';
+export const UNCAT: Category = { id: UNCAT_ID, name: 'Uncategorised', kind: 'variable', mark: 'dot', c: '#7f8aa3', cl: '#b7c0d2', cd: '#59637a' };
+export const uncatFor = (lang: string): Category => ({ ...UNCAT, name: lang === 'pt' ? 'Sem categoria' : 'Uncategorised' });
+export const orphanTx = (l: Ledger, ym: string) => {
+  const known = new Set(l.cats.map((c) => c.id));
+  return txOfMonth(l, ym).filter((t) => !known.has(t.cat));
+};
 
 export const PALETTE = [
   { c: '#6c7ff2', cl: '#a3b0ff', cd: '#4757c9' },
@@ -44,7 +64,7 @@ export function monthMeta(ym: string, now = new Date()) {
 }
 
 export function emptyLedger(): Ledger {
-  return { v: 2, workspace: '', lang: 'en', onboarded: false, cats: [], months: {}, tx: [] };
+  return { v: SCHEMA, workspace: '', lang: 'en', onboarded: false, cats: [], months: {}, tx: [] };
 }
 
 /** Suggested starter categories offered during setup. Everything stays editable. */
@@ -60,7 +80,7 @@ export const STARTERS: Array<{ key: string; en: string; pt: string; kind: Kind; 
 ];
 
 export function makeCategory(name: string, kind: Kind, ci: number, index: number): Category {
-  return { id: 'c' + Date.now().toString(36) + index, name, kind, mark: MARKS[index % MARKS.length], ...PALETTE[ci % PALETTE.length] };
+  return { id: uid('c'), name, kind, mark: MARKS[index % MARKS.length], ...PALETTE[ci % PALETTE.length] };
 }
 
 /** Returns the budget for a month, seeding it from the most recent earlier month. */

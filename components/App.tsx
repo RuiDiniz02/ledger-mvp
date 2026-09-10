@@ -6,9 +6,10 @@ import Onboarding from './Onboarding';
 import { useLedger } from '@/lib/store';
 import { money, dayLabel } from '@/lib/format';
 import {
-  PALETTE, allocated, catState, ensureMonth, iso, makeCategory, monthBudget, monthMeta,
-  shiftYm, spentBy, totalSpent, txOfMonth, unsettled, ymLabel, ymNow, ymOf,
+  PALETTE, UNCAT_ID, allocated, catState, ensureMonth, iso, makeCategory, monthBudget, monthMeta,
+  orphanTx, shiftYm, spentBy, totalSpent, txOfMonth, uid, uncatFor, unsettled, ymLabel, ymNow, ymOf,
 } from '@/lib/data';
+import { copyBackup, parseBackup, readFile, saveBackup, summarize, type Summary } from '@/lib/backup';
 import { makeT } from '@/lib/i18n';
 import { tap, feedbackOn, setFeedback } from '@/lib/tap';
 import type { Category, Kind, Lang, Ledger, Tx } from '@/lib/types';
@@ -21,27 +22,35 @@ const SCRIM = 'anim-fade absolute inset-0 z-40 bg-[rgba(11,20,24,.42)]';
 const SHEET = 'anim-sheet absolute inset-x-0 bottom-0 z-50 rounded-t-[30px] bg-canvas';
 
 type Screen = 'home' | 'activity' | 'budget' | 'me' | 'detail';
-type Draft = { amount: string; cat: string; date: string; note: string; scope: 'mine' | 'split'; pct: number };
+type Draft = { id: string | null; amount: string; cat: string; date: string; note: string; scope: 'mine' | 'split'; pct: number };
 type CatForm = { id: string | null; name: string; kind: Kind; ci: number; target: string };
+type Sheet = null | 'log' | 'tx' | 'cat' | 'import';
+/** What to do with the expenses of a category being deleted. */
+type CatDelete = { count: number; mode: 'uncat' | 'move' | 'purge'; dest: string };
 
 const toCents = (s: string) => Math.round((parseFloat((s || '').replace(',', '.')) || 0) * 100);
 const fromCents = (c: number) => (c ? String(c / 100) : '');
+const emptyDraft = (): Draft => ({ id: null, amount: '', cat: '', date: iso(new Date()), note: '', scope: 'mine', pct: 50 });
 
 export default function App() {
-  const { data, update, reset } = useLedger();
+  const { data, update, replace, reset, storage } = useLedger();
   const [screen, setScreen] = useState<Screen>('home');
   const [ym, setYm] = useState<string>(ymNow());
   const [detail, setDetail] = useState<string | null>(null);
-  const [sheet, setSheet] = useState<null | 'log' | 'tx' | 'cat'>(null);
+  const [sheet, setSheet] = useState<Sheet>(null);
   const [viewTx, setViewTx] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'mine' | 'split'>('all');
   const [toast, setToast] = useState<string | null>(null);
-  const [draft, setDraft] = useState<Draft>({ amount: '', cat: '', date: iso(new Date()), note: '', scope: 'mine', pct: 50 });
+  const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [form, setForm] = useState<CatForm>({ id: null, name: '', kind: 'variable', ci: 4, target: '' });
   const [fb, setFb] = useState(true);
   // Raw keystrokes for the ceiling field, so "12.50" survives being typed.
   const [ceilDraft, setCeilDraft] = useState<string | null>(null);
   const [armDelete, setArmDelete] = useState(false);
+  const [catDel, setCatDel] = useState<CatDelete | null>(null);
+  const [incoming, setIncoming] = useState<{ ledger: Ledger; summary: Summary } | null>(null);
+  const [installer, setInstaller] = useState<{ prompt: () => Promise<void> } | null>(null);
+  const fileInput = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => { setFb(feedbackOn()); }, []);
 
@@ -52,7 +61,45 @@ export default function App() {
   }, [toast]);
 
   useEffect(() => { setCeilDraft(null); }, [ym]);
-  useEffect(() => { setArmDelete(false); }, [sheet, viewTx]);
+  useEffect(() => { setArmDelete(false); setCatDel(null); }, [sheet, viewTx]);
+
+  // Chrome and Android offer a real install prompt; iOS has none, so Account
+  // falls back to written instructions there.
+  useEffect(() => {
+    const onPrompt = (e: Event) => {
+      e.preventDefault();
+      const ev = e as Event & { prompt: () => Promise<void> };
+      setInstaller({ prompt: () => ev.prompt() });
+    };
+    window.addEventListener('beforeinstallprompt', onPrompt);
+    return () => window.removeEventListener('beforeinstallprompt', onPrompt);
+  }, []);
+
+  // The phone's back gesture should dismiss whatever is on top, not leave the
+  // app. One history entry stands for "there is something to dismiss".
+  const held = useRef(false);
+  const selfPop = useRef(false);
+  const overlay = sheet !== null || screen === 'detail';
+  useEffect(() => {
+    if (overlay && !held.current) {
+      held.current = true;
+      try { history.pushState({ ledgerOverlay: true }, ''); } catch { held.current = false; }
+    } else if (!overlay && held.current) {
+      held.current = false;
+      selfPop.current = true;
+      try { history.back(); } catch { selfPop.current = false; }
+    }
+  });
+  useEffect(() => {
+    const onPop = () => {
+      if (selfPop.current) { selfPop.current = false; return; }
+      held.current = false;
+      if (sheet) { tap('back'); setSheet(null); }
+      else if (screen === 'detail') { setScreen('home'); setDetail(null); }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [sheet, screen]);
 
   // A sheet is a modal: Escape closes it, and on desktop a physical keyboard drives the keypad.
   const keys = useRef<{ press: (k: string) => void; save: () => void } | null>(null);
@@ -82,19 +129,29 @@ export default function App() {
   const m = monthMeta(ym);
   const mb = monthBudget(l, ym);
 
-  const cats = l.cats.map((c) => {
+  // Expenses left behind by a deleted category still count toward the month, so
+  // they get their own read-only card rather than quietly inflating the total.
+  const orphans = orphanTx(l, ym);
+  const shown: Array<Category & { virtual?: boolean }> = orphans.length
+    ? [...l.cats, { ...uncatFor(lang), virtual: true }]
+    : l.cats;
+
+  const cats = shown.map((c) => {
     const target = mb.targets[c.id] || 0;
-    const sp = spentBy(l, ym, c.id);
+    const sp = c.virtual ? orphans.reduce((a, t) => a + t.amount, 0) : spentBy(l, ym, c.id);
     const st = catState(c.kind, target, sp, WARN_AT);
     const pct = target > 0 ? Math.round((sp / target) * 100) : 0;
     const meta =
-      st === 'over' ? { color: '#d8365b', text: $(sp - target) + ' ' + t('overBy'), bar: '#ec6a86' }
+      c.virtual ? { color: '#8b969b', text: t('uncatBody'), bar: c.c }
+      : st === 'over' ? { color: '#d8365b', text: $(sp - target) + ' ' + t('overBy'), bar: '#ec6a86' }
       : st === 'near' ? { color: '#c8722a', text: pct + '% ' + t('used') + ' — ' + t('tight'), bar: '#f4874b' }
       : st === 'funded' ? { color: '#0b7b8f', text: t('funded'), bar: c.c }
       : st === 'empty' ? { color: '#8b969b', text: t('noTarget'), bar: c.c }
       : { color: '#8b969b', text: pct + '% ' + t('used'), bar: c.c };
-    return { ...c, target, spent: sp, st, meta, w: target > 0 ? Math.min(100, (sp / target) * 100) : 0 };
+    return { ...c, virtual: c.virtual === true, target, spent: sp, st, meta, w: target > 0 ? Math.min(100, (sp / target) * 100) : 0 };
   });
+  /** Real categories only — the uncategorised bucket has no budget to set. */
+  const realCats = cats.filter((c) => !c.virtual);
   const byId = Object.fromEntries(cats.map((c) => [c.id, c]));
   const spent = totalSpent(l, ym);
   const alloc = allocated(mb, l.cats);
@@ -130,9 +187,26 @@ export default function App() {
     if (!l.cats.length) { go('budget'); setToast(t('noCatsBody')); return; }
     const recent = l.tx.length ? l.tx[l.tx.length - 1].cat : null;
     const start = recent && l.cats.some((c) => c.id === recent) ? recent : l.cats[0].id;
-    setDraft({ amount: '', cat: start, date: iso(new Date()), note: '', scope: 'mine', pct: 50 });
+    setDraft({ ...emptyDraft(), cat: start });
     setSheet('log');
   };
+
+  /** Reopens the log sheet over an existing expense instead of forcing a delete and retype. */
+  const openEdit = (x: Tx) => {
+    tap('light');
+    const known = l.cats.some((c) => c.id === x.cat);
+    setDraft({
+      id: x.id,
+      amount: String(x.amount / 100),
+      cat: known ? x.cat : l.cats.length ? l.cats[0].id : x.cat,
+      date: x.date,
+      note: x.note,
+      scope: x.scope,
+      pct: x.scope === 'split' ? x.pct : 50,
+    });
+    setSheet('log');
+  };
+
   const openCatForm = (c?: Category) => {
     if (c) {
       const ci = PALETTE.findIndex((p) => p.c === c.c);
@@ -161,15 +235,33 @@ export default function App() {
     setSheet(null);
   };
 
-  const deleteCat = () => {
+  /** Opens the delete panel, pre-answering the question when nothing depends on it. */
+  const askDeleteCat = () => {
     if (!form.id) return;
+    const count = l.tx.filter((x) => x.cat === form.id).length;
+    const dest = l.cats.find((c) => c.id !== form.id)?.id ?? '';
+    tap('light');
+    setCatDel({ count, mode: count && dest ? 'move' : 'uncat', dest });
+  };
+
+  const deleteCat = () => {
+    const id = form.id;
+    const plan = catDel;
+    if (!id || !plan) return;
     update((d) => {
-      d.cats = d.cats.filter((c) => c.id !== form.id);
-      Object.values(d.months).forEach((b) => { delete b.targets[form.id as string]; });
+      if (plan.mode === 'purge') d.tx = d.tx.filter((x) => x.cat !== id);
+      else if (plan.mode === 'move' && plan.dest) d.tx.forEach((x) => { if (x.cat === id) x.cat = plan.dest; });
+      // 'uncat' leaves the rows pointing at a category that no longer exists;
+      // they surface under the Uncategorised card.
+      d.cats = d.cats.filter((c) => c.id !== id);
+      Object.values(d.months).forEach((b) => { delete b.targets[id]; });
     });
+    tap('back');
+    setCatDel(null);
     setSheet(null);
     setScreen('budget');
     setDetail(null);
+    setToast(t('catDeleted', { name: form.name.trim() }));
   };
 
   const pressKey = (k: string) =>
@@ -191,22 +283,68 @@ export default function App() {
     const cat = l.cats.find((c) => c.id === draft.cat);
     if (!cat) return;
     const cents = Math.round(amountValue * 100);
+    const editing = draft.id;
+    const fields = {
+      cat: draft.cat, amount: cents, date: draft.date, note: draft.note || cat.name,
+      scope: draft.scope, pct: draft.scope === 'split' ? draft.pct : 100,
+    };
     update((d) => {
-      d.tx.push({
-        id: 'u' + Date.now(), cat: draft.cat, amount: cents, date: draft.date,
-        note: draft.note || cat.name, scope: draft.scope, pct: draft.scope === 'split' ? draft.pct : 100,
-        paidBy: 'me', source: 'manual',
-      });
+      if (editing) {
+        const row = d.tx.find((x) => x.id === editing);
+        // The row keeps its id, paidBy and source, so an edit never rewrites provenance.
+        if (row) Object.assign(row, fields);
+      } else {
+        d.tx.push({ id: uid('u'), ...fields, paidBy: 'me', source: 'manual' });
+      }
       ensureMonth(d, ymOf(draft.date));
     });
     tap('confirm');
     setYm(ymOf(draft.date));
     setSheet(null);
-    setDraft({ amount: '', cat: draft.cat, date: iso(new Date()), note: '', scope: 'mine', pct: 50 });
-    setToast(t('logged') + ' ' + $(cents) + ' · ' + cat.name);
+    setDraft({ ...emptyDraft(), cat: draft.cat });
+    setToast(editing ? t('txUpdated') + ' · ' + $(cents) : t('logged') + ' ' + $(cents) + ' · ' + cat.name);
   };
 
   keys.current = { press: pressKey, save: saveTx };
+
+  const doExport = async () => {
+    tap('light');
+    const result = await saveBackup(l);
+    if (result === 'failed') { setToast(t('exportFailed')); return; }
+    update((d) => { d.lastExport = new Date().toISOString(); });
+    tap('confirm');
+    setToast(t('exported'));
+  };
+
+  const doCopy = async () => {
+    tap('light');
+    if (!(await copyBackup(l))) { setToast(t('exportFailed')); return; }
+    update((d) => { d.lastExport = new Date().toISOString(); });
+    tap('confirm');
+    setToast(t('exportCopied'));
+  };
+
+  const doPickImport = async (file: File | null) => {
+    if (!file) return;
+    let text = '';
+    try { text = await readFile(file); } catch { setToast(t('importBad')); return; }
+    const parsed = parseBackup(text);
+    if (!parsed.ok) { setToast(parsed.reason === 'newer' ? t('importNewer') : t('importBad')); return; }
+    // Confirm before replacing, with a summary of what is actually in the file.
+    setIncoming({ ledger: parsed.ledger, summary: summarize(parsed.ledger) });
+    setSheet('import');
+  };
+
+  const doImport = () => {
+    if (!incoming) return;
+    replace(incoming.ledger);
+    tap('confirm');
+    setIncoming(null);
+    setSheet(null);
+    setScreen('home');
+    setYm(ymNow());
+    setToast(t('importDone'));
+  };
 
   // Live impact of the draft on the chosen category, shown while typing.
   const draftCat = byId[draft.cat];
@@ -221,7 +359,7 @@ export default function App() {
     : { over: false, text: $(draftCat.target - draftCat.spent - draftShare) + ' ' + t('leftAfter', { name: draftCat.name }) };
 
   const Row = ({ tx, showTile = true }: { tx: Tx; showTile?: boolean }) => {
-    const c = byId[tx.cat];
+    const c = byId[tx.cat] || byId[UNCAT_ID];
     return (
       <button onClick={() => { tap('light'); setViewTx(tx.id); setSheet('tx'); }} className='flex w-full items-center gap-3 border-t border-black/[0.05] px-[15px] py-3 text-left first:border-t-0'>
         {showTile && c && <Tile cat={c} size={34} />}
@@ -244,6 +382,7 @@ export default function App() {
   );
 
   const detCat = cats.find((c) => c.id === detail);
+  const detTx = !detCat ? [] : detCat.virtual ? orphans : monthTx.filter((x) => x.cat === detCat.id);
   const filtered = monthTx.filter((x) => filter === 'all' || x.scope === filter);
   const groupMap: Record<string, Tx[]> = {};
   filtered.forEach((x) => { (groupMap[x.date] = groupMap[x.date] || []).push(x); });
@@ -396,6 +535,11 @@ export default function App() {
                 <button onClick={() => { tap('light'); setYm(shiftYm(ym, 1)); }} className='grid h-7 w-7 place-items-center rounded-full bg-white text-[#5b6a70] border border-black/[0.08]'>›</button>
                 <span className='ml-auto text-[11px] text-[#8b969b]'>{t('perMonth')}</span>
               </div>
+              {!l.months[ym] && mb.ceiling > 0 && (
+                <div className='mb-4 rounded-[16px] border border-black/[0.06] bg-white px-3.5 py-3 text-[11.5px] leading-relaxed text-[#8b969b]'>
+                  {t('copiedFromPrev')}
+                </div>
+              )}
 
               <div className={CARD + ' rounded-[22px] p-[18px]'}>
                 <div className={LABEL}>{t('monthlyCeiling')}</div>
@@ -433,7 +577,7 @@ export default function App() {
 
               <div className='mb-3 mt-6 text-[13px] font-bold text-ink'>{t('categoryTargets')}</div>
               <div className='flex flex-col gap-[9px]'>
-                {cats.map((c) => (
+                {realCats.map((c) => (
                   <div key={c.id} className={CARD + ' px-4 py-3.5'}>
                     <button onClick={() => openCatForm(c)} className='flex w-full items-center gap-3 text-left'>
                       <Tile cat={c} size={34} />
@@ -471,13 +615,15 @@ export default function App() {
                   <div className='h-[7px] w-[7px] rotate-45 border-b-2 border-l-2 border-[#5b6a70]' />
                   <span className='text-[12.5px] font-semibold text-[#5b6a70]'>{t('overview')}</span>
                 </button>
-                <button onClick={() => openCatForm(detCat)} className='flex h-[34px] items-center rounded-full border border-black/[0.08] bg-white px-3.5 text-[12.5px] font-semibold text-[#0b7b8f]'>{t('editCategory')}</button>
+                {!detCat.virtual && (
+                  <button onClick={() => openCatForm(detCat)} className='flex h-[34px] items-center rounded-full border border-black/[0.08] bg-white px-3.5 text-[12.5px] font-semibold text-[#0b7b8f]'>{t('editCategory')}</button>
+                )}
               </div>
               <div className='mb-[22px] flex items-center gap-[15px]'>
                 <Tile cat={detCat} size={54} />
                 <div>
                   <div className='text-[21px] font-bold tracking-[-0.01em] text-ink'>{detCat.name}</div>
-                  <div className='mt-[5px] text-[12.5px] text-[#8b969b]'>{detCat.kind === 'fixed' ? t('fixed') : t('variable')} · {monthTx.filter((x) => x.cat === detCat.id).length} {t('transactions')}</div>
+                  <div className='mt-[5px] text-[12.5px] text-[#8b969b]'>{detCat.virtual ? '' : (detCat.kind === 'fixed' ? t('fixed') : t('variable')) + ' · '}{detTx.length} {t('transactions')}</div>
                 </div>
               </div>
               <div className={CARD + ' rounded-[22px] p-[18px]'}>
@@ -486,19 +632,25 @@ export default function App() {
                     <div className={LABEL}>{t('spent')}</div>
                     <div className='mt-1.5 font-mono text-[28px] tracking-[-0.03em] text-ink'>{$(detCat.spent)}</div>
                   </div>
-                  <div className='text-right'>
-                    <div className={LABEL}>{t('left')}</div>
-                    <div className='mt-1.5 font-mono text-[17px]' style={{ color: detCat.meta.color }}>{$(detCat.target - detCat.spent)}</div>
+                  {!detCat.virtual && (
+                    <div className='text-right'>
+                      <div className={LABEL}>{t('left')}</div>
+                      <div className='mt-1.5 font-mono text-[17px]' style={{ color: detCat.meta.color }}>{$(detCat.target - detCat.spent)}</div>
+                    </div>
+                  )}
+                </div>
+                {!detCat.virtual && (
+                  <div className='relative my-4 h-2.5 overflow-hidden rounded-full bg-[#eceff0]'>
+                    <div className='h-full rounded-full bar-fill' style={{ width: detCat.w + '%', background: detCat.meta.bar }} />
                   </div>
-                </div>
-                <div className='relative my-4 h-2.5 overflow-hidden rounded-full bg-[#eceff0]'>
-                  <div className='h-full rounded-full bar-fill' style={{ width: detCat.w + '%', background: detCat.meta.bar }} />
-                </div>
-                <div className='text-xs leading-relaxed text-[#5b6a70]'>{detCat.meta.text}</div>
+                )}
+                <div className={(detCat.virtual ? 'mt-3.5 ' : '') + 'text-xs leading-relaxed text-[#5b6a70]'}>{detCat.meta.text}</div>
               </div>
-              <button onClick={() => go('budget')} className='my-3 flex h-[46px] w-full items-center justify-center rounded-2xl bg-deep text-[13.5px] font-semibold text-white'>{t('adjustTarget')}</button>
+              {!detCat.virtual && (
+                <button onClick={() => go('budget')} className='my-3 flex h-[46px] w-full items-center justify-center rounded-2xl bg-deep text-[13.5px] font-semibold text-white'>{t('adjustTarget')}</button>
+              )}
               <div className='mb-2.5 mt-6 text-[13px] font-bold text-ink'>{t('transactions')}</div>
-              <div className={CARD + ' overflow-hidden'}>{monthTx.filter((x) => x.cat === detCat.id).map((x) => <Row key={x.id} tx={x} showTile={false} />)}</div>
+              <div className={CARD + ' overflow-hidden'}>{detTx.map((x) => <Row key={x.id} tx={x} showTile={false} />)}</div>
             </div>
           )}
 
@@ -535,6 +687,66 @@ export default function App() {
                   </div>
                   <div className='max-w-[140px] text-right text-[11.5px] text-white/55'>{t('unsettledBody')}</div>
                 </div>
+              </div>
+
+              <div className={LABEL + ' mb-2.5 mt-6'}>{t('onThisDevice')}</div>
+              <div className={CARD + ' rounded-[22px] p-[18px]'}>
+                <div className='text-[12.5px] leading-relaxed text-[#5b6a70]'>{t('deviceBody')}</div>
+                <div className='mt-3.5 flex flex-col gap-2'>
+                  {([
+                    [storage.persisted, storage.persisted ? t('storagePersisted') : t('storageBestEffort')],
+                    [storage.standalone, storage.standalone ? t('installedAs') : t('notInstalled')],
+                  ] as const).map(([ok, label], i) => (
+                    <div key={i} className='flex items-center gap-2.5'>
+                      <span className='grid h-[18px] w-[18px] shrink-0 place-items-center rounded-full' style={{ background: ok ? '#0b7b8f' : '#dfe4e6' }}>
+                        {ok ? <span className='-mt-px block h-[3.5px] w-[7px] -rotate-45 border-b-2 border-l-2 border-white' /> : <span className='block h-[7px] w-[2px] rounded-sm bg-[#8b969b]' />}
+                      </span>
+                      <span className='text-[12.5px] font-medium' style={{ color: ok ? '#16242a' : '#8b969b' }}>{label}</span>
+                    </div>
+                  ))}
+                  {storage.usedKb !== null && (
+                    <div className='ml-[28px] font-mono text-[11px] text-[#b3bcbf]'>{t('storageUsed', { n: storage.usedKb })}</div>
+                  )}
+                </div>
+
+                {!storage.standalone && (
+                  <div className='mt-4 rounded-[16px] bg-canvas p-3.5'>
+                    <div className='text-[12.5px] font-semibold text-ink'>{t('installTitle')}</div>
+                    <div className='mt-1 text-[11.5px] leading-relaxed text-[#8b969b]'>{installer ? t('installAndroid') : t('installIos')}</div>
+                    {installer && (
+                      <button
+                        onClick={async () => { tap('light'); try { await installer.prompt(); } catch {} setInstaller(null); }}
+                        className='mt-2.5 h-[40px] w-full rounded-[13px] bg-deep text-[13px] font-semibold text-white'
+                      >
+                        {t('installNow')}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className={LABEL + ' mb-2.5 mt-6'}>{t('backupTitle')}</div>
+              <div className={CARD + ' rounded-[22px] p-[18px]'}>
+                <div className='font-mono text-[11.5px]' style={{ color: l.lastExport ? '#0b7b8f' : '#c8722a' }}>
+                  {l.lastExport ? t('lastExport', { when: dayLabel(l.lastExport.slice(0, 10), lang) }) : t('neverExported')}
+                </div>
+                <button onClick={doExport} className='mt-3 flex h-[50px] w-full items-center justify-center gap-2.5 rounded-[16px] bg-deep text-[14px] font-semibold text-white'>
+                  <span className='grid h-[20px] w-[20px] place-items-center rounded-[7px] bg-[#7fd9e6]'>
+                    <span className='block h-[8px] w-[8px] rotate-45 border-b-2 border-r-2 border-deep' />
+                  </span>
+                  {t('exportBtn')}
+                </button>
+                <div className='mt-2 flex gap-2'>
+                  <button onClick={() => { tap('light'); fileInput.current?.click(); }} className='h-[46px] flex-1 rounded-[15px] border border-black/[0.07] bg-white text-[13px] font-semibold text-ink'>{t('importBtn')}</button>
+                  <button onClick={doCopy} className='h-[46px] flex-1 rounded-[15px] border border-black/[0.07] bg-white text-[13px] font-semibold text-ink'>{t('copyBtn')}</button>
+                </div>
+                <input
+                  ref={fileInput}
+                  type='file'
+                  accept='application/json,.json'
+                  hidden
+                  onChange={(e) => { const f = e.target.files?.[0] ?? null; e.target.value = ''; doPickImport(f); }}
+                />
               </div>
 
               <div className={LABEL + ' mb-2.5 mt-6'}>{t('comingNext')}</div>
@@ -579,11 +791,11 @@ export default function App() {
         {sheet === 'log' && (
           <>
             <div className={SCRIM} onClick={closeSheet} />
-            <div role='dialog' aria-modal='true' aria-label={t('newExpense')} className={SHEET + ' flex max-h-[96%] flex-col pt-2.5'}>
+            <div role='dialog' aria-modal='true' aria-label={draft.id ? t('editExpense') : t('newExpense')} className={SHEET + ' flex max-h-[96%] flex-col pt-2.5'}>
               <div className='shrink-0 px-[18px]'>
                 <div className='mx-auto mb-3 mt-0.5 h-1 w-[38px] rounded-full bg-black/15' />
                 <div className='flex items-center justify-between'>
-                  <div className='text-[17px] font-bold text-ink'>{t('newExpense')}</div>
+                  <div className='text-[17px] font-bold text-ink'>{draft.id ? t('editExpense') : t('newExpense')}</div>
                   <button onClick={closeSheet} aria-label={t('close')} className='grid h-[30px] w-[30px] place-items-center rounded-full bg-black/[0.06] text-[#5b6a70]'>✕</button>
                 </div>
                 <div className='relative pb-0.5 pt-2'>
@@ -600,7 +812,7 @@ export default function App() {
               <div className='min-h-0 flex-1 overflow-y-auto overscroll-contain px-[18px] pt-1'>
                 <div className={LABEL + ' mb-2 mt-2'}>{t('catLabel')}</div>
                 <div className='-mx-[18px] flex gap-2.5 overflow-x-auto px-[18px] pb-1'>
-                  {cats.map((c) => {
+                  {realCats.map((c) => {
                     const on = draft.cat === c.id;
                     return (
                       <button key={c.id} onClick={() => { tap('light'); setDraft((d) => ({ ...d, cat: c.id })); }} aria-pressed={on} className='flex w-[68px] shrink-0 flex-col items-center gap-[7px] pt-1'>
@@ -667,7 +879,7 @@ export default function App() {
                       <span className='-mt-0.5 block h-1 w-2 -rotate-45 border-b-2 border-l-2 border-deep' />
                     </span>
                   )}
-                  {amountValue > 0 ? t('confirmExpense') + ' · ' + $(draftCents) : t('enterAmount')}
+                  {amountValue > 0 ? (draft.id ? t('saveChanges') : t('confirmExpense')) + ' · ' + $(draftCents) : t('enterAmount')}
                 </button>
               </div>
             </div>
@@ -677,7 +889,7 @@ export default function App() {
         {sheet === 'tx' && (() => {
           const x = l.tx.find((r) => r.id === viewTx);
           if (!x) return null;
-          const c = byId[x.cat];
+          const c = byId[x.cat] || byId[UNCAT_ID];
           return (
             <>
               <div className={SCRIM} onClick={closeSheet} />
@@ -692,6 +904,14 @@ export default function App() {
                   <div className='font-mono text-2xl tracking-[-0.02em] text-ink'>{$(x.amount)}</div>
                 </div>
                 {armDelete && <div className='mb-2.5 text-center text-[12px] font-semibold text-[#d8365b]'>{t('tapAgainToDelete')}</div>}
+                {!armDelete && l.cats.length > 0 && (
+                  <button onClick={() => openEdit(x)} className='mb-2.5 flex h-[50px] w-full items-center justify-center gap-2 rounded-[17px] bg-deep text-sm font-semibold text-white'>
+                    <span className='grid h-[18px] w-[18px] place-items-center rounded-[6px] bg-[#7fd9e6]'>
+                      <span className='block h-[9px] w-[2px] rotate-45 rounded-sm bg-deep' />
+                    </span>
+                    {t('edit')}
+                  </button>
+                )}
                 <div className='flex gap-2.5'>
                   <button onClick={armDelete ? () => { tap('light'); setArmDelete(false); } : closeSheet} className='h-[50px] flex-1 rounded-[17px] border border-black/[0.06] bg-white text-sm font-semibold text-ink'>{armDelete ? t('cancel') : t('close')}</button>
                   <button
@@ -737,12 +957,86 @@ export default function App() {
                   <button key={i} onClick={() => { tap('light'); setForm({ ...form, ci: i }); }} className='h-10 flex-1 rounded-[13px]' style={{ background: 'linear-gradient(155deg,' + p.cl + ',' + p.c + ' 60%,' + p.cd + ')', boxShadow: form.ci === i ? '0 0 0 3px #12303a' : 'inset 0 1px 0 rgba(255,255,255,.5)' }} />
                 ))}
               </div>
-              <button onClick={saveCat} disabled={!form.name.trim()} className='h-[54px] w-full rounded-[18px] text-[15px] font-bold text-white transition-colors' style={{ background: form.name.trim() ? '#12303a' : 'rgba(22,36,42,.22)' }}>
-                {form.id ? t('saveChanges') : t('create')}
-              </button>
-              {form.id && (
-                <button onClick={() => { if (confirm(t('deleteCatWarn'))) deleteCat(); }} className='mt-2.5 h-[46px] w-full rounded-[16px] text-[13.5px] font-semibold text-[#d8365b]'>{t('deleteCategory')}</button>
+              {!catDel && (
+                <button onClick={saveCat} disabled={!form.name.trim()} className='h-[54px] w-full rounded-[18px] text-[15px] font-bold text-white transition-colors' style={{ background: form.name.trim() ? '#12303a' : 'rgba(22,36,42,.22)' }}>
+                  {form.id ? t('saveChanges') : t('create')}
+                </button>
               )}
+              {form.id && !catDel && (
+                <button onClick={askDeleteCat} className='mt-2.5 h-[46px] w-full rounded-[16px] text-[13.5px] font-semibold text-[#d8365b]'>{t('deleteCategory')}</button>
+              )}
+
+              {catDel && (
+                <div className='anim-pop rounded-[20px] border border-[#ec6a86]/35 bg-white p-4'>
+                  {catDel.count > 0 ? (
+                    <>
+                      <div className='text-[13.5px] font-semibold text-ink'>{catDel.count === 1 ? t('catInUseOne') : t('catInUseTitle', { n: catDel.count })}</div>
+                      <div className='mt-1 text-[12px] text-[#8b969b]'>{t('catInUseBody')}</div>
+                      <div className='mt-3 flex flex-col gap-2'>
+                        {catDel.dest && (
+                          <label className='flex items-center gap-2.5 rounded-xl bg-canvas px-3 py-2.5'>
+                            <input type='radio' name='catdel' checked={catDel.mode === 'move'} onChange={() => setCatDel({ ...catDel, mode: 'move' })} style={{ accentColor: '#12303a' }} />
+                            <span className='shrink-0 text-[12.5px] font-semibold text-ink'>{t('moveThemTo')}</span>
+                            <select
+                              value={catDel.dest}
+                              onChange={(e) => setCatDel({ ...catDel, mode: 'move', dest: e.target.value })}
+                              className='ml-auto min-w-0 flex-1 rounded-lg border border-black/[0.08] bg-white px-2 py-1.5 text-[12.5px] font-semibold text-ink outline-none'
+                            >
+                              {realCats.filter((c) => c.id !== form.id).map((c) => (
+                                <option key={c.id} value={c.id}>{c.name}</option>
+                              ))}
+                            </select>
+                          </label>
+                        )}
+                        <label className='flex items-center gap-2.5 rounded-xl bg-canvas px-3 py-2.5'>
+                          <input type='radio' name='catdel' checked={catDel.mode === 'uncat'} onChange={() => setCatDel({ ...catDel, mode: 'uncat' })} style={{ accentColor: '#12303a' }} />
+                          <span className='text-[12.5px] font-semibold text-ink'>{t('keepUncategorised')}</span>
+                        </label>
+                        <label className='flex items-center gap-2.5 rounded-xl bg-canvas px-3 py-2.5'>
+                          <input type='radio' name='catdel' checked={catDel.mode === 'purge'} onChange={() => setCatDel({ ...catDel, mode: 'purge' })} style={{ accentColor: '#d8365b' }} />
+                          <span className='text-[12.5px] font-semibold text-[#d8365b]'>{t('deleteThemToo')}</span>
+                        </label>
+                      </div>
+                    </>
+                  ) : (
+                    <div className='text-[13.5px] font-semibold text-ink'>{t('confirmCatDelete')}</div>
+                  )}
+                  <div className='mt-3.5 flex gap-2.5'>
+                    <button onClick={() => { tap('light'); setCatDel(null); }} className='h-[46px] flex-1 rounded-[15px] border border-black/[0.07] bg-white text-[13.5px] font-semibold text-ink'>{t('cancel')}</button>
+                    <button onClick={deleteCat} className='h-[46px] flex-1 rounded-[15px] bg-[#d8365b] text-[13.5px] font-semibold text-white'>{t('confirmCatDelete')}</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {sheet === 'import' && incoming && (
+          <>
+            <div className={SCRIM} onClick={closeSheet} />
+            <div role='dialog' aria-modal='true' className={SHEET + ' px-[18px] pt-2.5'} style={{ paddingBottom: 'calc(24px + env(safe-area-inset-bottom))' }}>
+              <div className='mx-auto mb-3.5 mt-0.5 h-1 w-[38px] rounded-full bg-black/15' />
+              <div className='text-[17px] font-bold text-ink'>{t('importTitle')}</div>
+              <div className='mt-1.5 text-[12.5px] leading-relaxed text-[#8b969b]'>{t('importBody')}</div>
+              <div className='mt-4 rounded-[18px] border border-black/[0.06] bg-white p-4'>
+                <div className='text-[14px] font-semibold text-ink'>{incoming.summary.workspace || '—'}</div>
+                <div className='mt-1.5 font-mono text-[12px] text-[#5b6a70]'>
+                  {[
+                    incoming.summary.cats + ' ' + t(incoming.summary.cats === 1 ? 'unitCat' : 'unitCats'),
+                    incoming.summary.tx + ' ' + t(incoming.summary.tx === 1 ? 'unitTx' : 'unitTxs'),
+                    incoming.summary.months + ' ' + t(incoming.summary.months === 1 ? 'unitMonth' : 'unitMonths'),
+                  ].join(' · ')}
+                </div>
+                {incoming.summary.from && incoming.summary.to && (
+                  <div className='mt-1 font-mono text-[11.5px] text-[#8b969b]'>
+                    {t('importRange', { from: incoming.summary.from, to: incoming.summary.to })}
+                  </div>
+                )}
+              </div>
+              <div className='mt-4 flex gap-2.5'>
+                <button onClick={() => { tap('light'); setIncoming(null); setSheet(null); }} className='h-[50px] flex-1 rounded-[17px] border border-black/[0.06] bg-white text-sm font-semibold text-ink'>{t('cancel')}</button>
+                <button onClick={doImport} className='h-[50px] flex-1 rounded-[17px] bg-[#d8365b] text-sm font-semibold text-white'>{t('restore')}</button>
+              </div>
             </div>
           </>
         )}

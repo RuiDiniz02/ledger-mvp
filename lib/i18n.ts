@@ -39,6 +39,32 @@ const en = {
   amountLabel: 'Amount', catLabel: 'Category', dateLabel: 'Date', splitLabel: 'Who pays', noteLabel: 'Description',
   clearAmount: 'Clear', leftAfter: 'left in {name} after this', willExceed: 'Puts {name} {amount} over target',
   noTargetYet: 'No target set for {name}', tapAgainToDelete: 'Tap again to delete', cancel: 'Cancel',
+
+  editExpense: 'Edit expense', edit: 'Edit', txUpdated: 'Expense updated',
+  uncategorised: 'Uncategorised', uncatBody: 'Their category was deleted. Tap one to move it somewhere else.',
+  copiedFromPrev: 'Inherited from last month — change anything to make it this month’s own.',
+
+  catInUseTitle: '{n} expenses use this category', catInUseOne: 'One expense uses this category',
+  catInUseBody: 'Choose what happens to them.',
+  moveThemTo: 'Move them to', deleteThemToo: 'Delete the expenses too', keepUncategorised: 'Leave them uncategorised',
+  confirmCatDelete: 'Delete category', catDeleted: '{name} deleted',
+
+  onThisDevice: 'This device', deviceBody: 'Everything is stored on this phone. Nothing is uploaded, and there is no sync between devices yet — so keep a backup.',
+  storagePersisted: 'Storage is protected from cleanup', storageBestEffort: 'Storage could be cleared by the browser',
+  installedAs: 'Running as an installed app', notInstalled: 'Open in a browser tab',
+  storageUsed: '{n} KB used',
+  installTitle: 'Add to your home screen',
+  installIos: 'In Safari, tap Share, then “Add to Home Screen”. Installing keeps your data safe from browser cleanups and hides the address bar.',
+  installAndroid: 'Install it as an app so your data survives browser cleanups and the address bar goes away.',
+  installNow: 'Install',
+  backupTitle: 'Backup', exportBtn: 'Save a backup', importBtn: 'Restore a backup', copyBtn: 'Copy as text',
+  lastExport: 'Last backup {when}', neverExported: 'No backup yet',
+  exported: 'Backup saved', exportCopied: 'Backup copied to the clipboard', exportFailed: 'Could not save the file — try Copy as text',
+  importBad: 'That file is not a Ledger backup', importNewer: 'That backup came from a newer version of the app',
+  importTitle: 'Restore this backup?', importBody: 'It replaces everything on this device. Save a backup first if you are unsure.',
+  unitCat: 'category', unitCats: 'categories', unitTx: 'expense', unitTxs: 'expenses', unitMonth: 'month', unitMonths: 'months',
+  importRange: 'from {from} to {to}',
+  importDone: 'Backup restored', restore: 'Replace my data',
 };
 
 const pt: typeof en = {
@@ -80,6 +106,32 @@ const pt: typeof en = {
   amountLabel: 'Valor', catLabel: 'Categoria', dateLabel: 'Data', splitLabel: 'Quem paga', noteLabel: 'Descrição',
   clearAmount: 'Limpar', leftAfter: 'ficam em {name} depois desta', willExceed: 'Passa o limite de {name} em {amount}',
   noTargetYet: 'Sem limite definido para {name}', tapAgainToDelete: 'Toca outra vez para apagar', cancel: 'Cancelar',
+
+  editExpense: 'Editar despesa', edit: 'Editar', txUpdated: 'Despesa atualizada',
+  uncategorised: 'Sem categoria', uncatBody: 'A categoria delas foi apagada. Toca numa para a mudar.',
+  copiedFromPrev: 'Herdado do mês anterior — muda algo para este mês passar a ter o seu.',
+
+  catInUseTitle: '{n} despesas usam esta categoria', catInUseOne: 'Uma despesa usa esta categoria',
+  catInUseBody: 'Escolhe o que lhes acontece.',
+  moveThemTo: 'Mover para', deleteThemToo: 'Apagar também as despesas', keepUncategorised: 'Deixar sem categoria',
+  confirmCatDelete: 'Apagar categoria', catDeleted: '{name} apagada',
+
+  onThisDevice: 'Este dispositivo', deviceBody: 'Tudo fica guardado neste telemóvel. Nada é enviado para fora e ainda não há sincronização entre dispositivos — por isso guarda uma cópia.',
+  storagePersisted: 'Os dados estão protegidos de limpezas', storageBestEffort: 'O browser pode apagar os dados',
+  installedAs: 'A correr como app instalada', notInstalled: 'Aberto num separador do browser',
+  storageUsed: '{n} KB usados',
+  installTitle: 'Adicionar ao ecrã principal',
+  installIos: 'No Safari, toca em Partilhar e depois “Adicionar ao ecrã principal”. Instalada, os dados ficam protegidos de limpezas do browser e a barra de endereço desaparece.',
+  installAndroid: 'Instala como app para os dados sobreviverem a limpezas do browser e a barra de endereço desaparecer.',
+  installNow: 'Instalar',
+  backupTitle: 'Cópia de segurança', exportBtn: 'Guardar cópia', importBtn: 'Restaurar cópia', copyBtn: 'Copiar como texto',
+  lastExport: 'Última cópia {when}', neverExported: 'Ainda sem cópia',
+  exported: 'Cópia guardada', exportCopied: 'Cópia copiada para a área de transferência', exportFailed: 'Não foi possível guardar o ficheiro — usa Copiar como texto',
+  importBad: 'Esse ficheiro não é uma cópia do Ledger', importNewer: 'Essa cópia é de uma versão mais recente da app',
+  importTitle: 'Restaurar esta cópia?', importBody: 'Substitui tudo o que está neste dispositivo. Guarda uma cópia primeiro se tiveres dúvidas.',
+  unitCat: 'categoria', unitCats: 'categorias', unitTx: 'despesa', unitTxs: 'despesas', unitMonth: 'mês', unitMonths: 'meses',
+  importRange: 'de {from} até {to}',
+  importDone: 'Cópia restaurada', restore: 'Substituir os meus dados',
 };
 
 export type Key = keyof typeof en;
