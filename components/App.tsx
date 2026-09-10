@@ -7,7 +7,7 @@ import { useLedger } from '@/lib/store';
 import { money, dayLabel } from '@/lib/format';
 import {
   PALETTE, UNCAT_ID, allocated, catState, ensureMonth, iso, makeCategory, monthBudget, monthMeta,
-  orphanTx, shiftYm, spentBy, totalSpent, txOfMonth, uid, uncatFor, unsettled, ymLabel, ymNow, ymOf,
+  monthUsed, orphanTx, potBalance, shiftYm, spentBy, txOfMonth, uid, uncatFor, unsettled, used, ymLabel, ymNow, ymOf,
 } from '@/lib/data';
 import { copyBackup, parseBackup, readFile, saveBackup, summarize, type Summary } from '@/lib/backup';
 import { makeT } from '@/lib/i18n';
@@ -138,22 +138,33 @@ export default function App() {
 
   const cats = shown.map((c) => {
     const target = mb.targets[c.id] || 0;
-    const sp = c.virtual ? orphans.reduce((a, t) => a + t.amount, 0) : spentBy(l, ym, c.id);
+    const virtual = c.virtual === true;
+    const sp = virtual ? orphans.reduce((a, t) => a + t.amount, 0) : spentBy(l, ym, c.id);
+    // What this category costs the month, which is not the same as what was logged.
+    const cost = virtual ? sp : used(c.kind, target, sp);
+    const pot = c.kind === 'saving' && !virtual;
+    const balance = pot ? potBalance(l, c.id, ym) : 0;
     const st = catState(c.kind, target, sp, WARN_AT);
     const pct = target > 0 ? Math.round((sp / target) * 100) : 0;
     const meta =
-      c.virtual ? { color: '#8b969b', text: t('uncatBody'), bar: c.c }
+      virtual ? { color: '#8b969b', text: t('uncatBody'), bar: c.c }
+      : pot ? { color: sp > 0 ? '#c8722a' : '#0b7b8f', text: (sp > 0 ? '−' : '+') + $(sp > 0 ? sp : target) + ' ' + t('thisMonthShort'), bar: c.c }
       : st === 'over' ? { color: '#d8365b', text: $(sp - target) + ' ' + t('overBy'), bar: '#ec6a86' }
+      : st === 'funded' ? { color: '#0b7b8f', text: t('committed'), bar: c.c }
       : st === 'near' ? { color: '#c8722a', text: pct + '% ' + t('used') + ' — ' + t('tight'), bar: '#f4874b' }
-      : st === 'funded' ? { color: '#0b7b8f', text: t('funded'), bar: c.c }
       : st === 'empty' ? { color: '#8b969b', text: t('noTarget'), bar: c.c }
       : { color: '#8b969b', text: pct + '% ' + t('used'), bar: c.c };
-    return { ...c, virtual: c.virtual === true, target, spent: sp, st, meta, w: target > 0 ? Math.min(100, (sp / target) * 100) : 0 };
+    return {
+      ...c, virtual, pot, target, spent: sp, cost, balance, st, meta,
+      w: target > 0 ? Math.min(100, (cost / target) * 100) : 0,
+    };
   });
   /** Real categories only — the uncategorised bucket has no budget to set. */
   const realCats = cats.filter((c) => !c.virtual);
   const byId = Object.fromEntries(cats.map((c) => [c.id, c]));
-  const spent = totalSpent(l, ym);
+  // Commitments and pot contributions count from the 1st, so this is what the
+  // month really costs — and what Remaining must be measured against.
+  const spent = monthUsed(l, ym);
   const alloc = allocated(mb, l.cats);
   const remaining = mb.ceiling - spent;
   const varLeft = cats.filter((c) => c.kind === 'variable').reduce((a, c) => a + Math.max(0, c.target - c.spent), 0);
@@ -161,8 +172,8 @@ export default function App() {
 
   let acc = 0;
   const parts: string[] = [];
-  cats.filter((c) => c.spent > 0).forEach((c) => {
-    const share = Math.min(100 - acc, (c.spent / Math.max(mb.ceiling || spent, spent, 1)) * 100);
+  cats.filter((c) => c.cost > 0).forEach((c) => {
+    const share = Math.min(100 - acc, (c.cost / Math.max(mb.ceiling || spent, spent, 1)) * 100);
     parts.push(c.c + ' ' + acc.toFixed(2) + '% ' + (acc + share).toFixed(2) + '%');
     acc += share;
   });
@@ -181,6 +192,7 @@ export default function App() {
   const go = (s: Screen) => { tap('light'); setSheet(null); setScreen(s); setDetail(null); };
   const closeSheet = () => { tap('back'); setSheet(null); };
   const chip = (on: boolean) => (on ? 'bg-deep text-white' : 'bg-white text-[#5b6a70]');
+  const kindLabel = (k: Kind) => (k === 'fixed' ? t('fixed') : k === 'saving' ? t('saving') : t('variable'));
 
   const openLog = () => {
     tap('light');
@@ -350,13 +362,25 @@ export default function App() {
   const draftCat = byId[draft.cat];
   const draftCents = Math.round(amountValue * 100);
   const draftShare = draft.scope === 'split' ? Math.round((draftCents * draft.pct) / 100) : draftCents;
-  const impact = !draftCat
-    ? null
-    : draftCat.target <= 0
-    ? { over: false, text: t('noTargetYet', { name: draftCat.name }) }
-    : draftCat.spent + draftShare > draftCat.target
-    ? { over: true, text: t('willExceed', { name: draftCat.name, amount: $(draftCat.spent + draftShare - draftCat.target) }) }
-    : { over: false, text: $(draftCat.target - draftCat.spent - draftShare) + ' ' + t('leftAfter', { name: draftCat.name }) };
+  // What this expense does, said in the terms of the category it lands in.
+  const impact = (() => {
+    if (!draftCat) return null;
+    const already = draft.id ? l.tx.find((x) => x.id === draft.id) : null;
+    // When editing, the row's own old amount must not count against itself.
+    const others = draftCat.spent - (already && already.cat === draftCat.id ? already.amount : 0);
+    if (draftCat.pot) {
+      const after = draftCat.balance + (already && already.cat === draftCat.id ? already.amount : 0) - draftShare;
+      return { over: after < 0, text: $(after) + ' ' + t('takeFromPot', { name: draftCat.name }) };
+    }
+    if (draftCat.target <= 0) return { over: false, text: t('noTargetYet', { name: draftCat.name }) };
+    const total = others + draftShare;
+    if (total > draftCat.target) {
+      return { over: true, text: t('willExceed', { name: draftCat.name, amount: $(total - draftCat.target) }) };
+    }
+    // A commitment is already paid for out of this month's ceiling.
+    if (draftCat.kind === 'fixed') return { over: false, text: t('alreadyCommitted') };
+    return { over: false, text: $(draftCat.target - total) + ' ' + t('leftAfter', { name: draftCat.name }) };
+  })();
 
   const Row = ({ tx, showTile = true }: { tx: Tx; showTile?: boolean }) => {
     const c = byId[tx.cat] || byId[UNCAT_ID];
@@ -475,15 +499,25 @@ export default function App() {
                       <div className='min-w-0 flex-1'>
                         <div className='flex items-baseline justify-between gap-2.5'>
                           <div className='truncate text-sm font-semibold text-ink'>{c.name}</div>
-                          <div className='shrink-0 font-mono text-[12.5px] text-ink'>{$(c.spent)}</div>
+                          <div className='shrink-0 font-mono text-[12.5px] text-ink'>{$(c.pot ? c.balance : c.cost)}</div>
                         </div>
-                        <div className='my-2 h-1.5 overflow-hidden rounded-full bg-[#eceff0]'>
-                          <div className='h-full rounded-full bar-fill' style={{ width: c.w + '%', background: c.meta.bar }} />
-                        </div>
-                        <div className='flex items-center justify-between gap-2.5'>
-                          <div className='text-[11.5px]' style={{ color: c.meta.color }}>{c.meta.text}</div>
-                          <div className='font-mono text-[11.5px] text-[#8b969b]'>{c.target > 0 ? t('of') + ' ' + $(c.target, false) : ''}</div>
-                        </div>
+                        {/* A pot has no monthly ceiling to fill, so a progress bar would be a lie. */}
+                        {c.pot ? (
+                          <div className='mt-1.5 flex items-center justify-between gap-2.5'>
+                            <div className='text-[11.5px]' style={{ color: c.meta.color }}>{c.meta.text}</div>
+                            <div className='font-mono text-[11.5px] text-[#8b969b]'>{t('balance')}</div>
+                          </div>
+                        ) : (
+                          <>
+                            <div className='my-2 h-1.5 overflow-hidden rounded-full bg-[#eceff0]'>
+                              <div className='h-full rounded-full bar-fill' style={{ width: c.w + '%', background: c.meta.bar }} />
+                            </div>
+                            <div className='flex items-center justify-between gap-2.5'>
+                              <div className='text-[11.5px]' style={{ color: c.meta.color }}>{c.meta.text}</div>
+                              <div className='font-mono text-[11.5px] text-[#8b969b]'>{c.target > 0 ? t('of') + ' ' + $(c.target, false) : ''}</div>
+                            </div>
+                          </>
+                        )}
                       </div>
                     </button>
                   ))}
@@ -583,7 +617,7 @@ export default function App() {
                       <Tile cat={c} size={34} />
                       <div className='min-w-0 flex-1'>
                         <div className='truncate text-[13.5px] font-semibold text-ink'>{c.name}</div>
-                        <div className='mt-[3px] text-[11px] text-[#8b969b]'>{c.kind === 'fixed' ? t('fixed') : t('variable')}{mb.ceiling > 0 && c.target > 0 ? ' · ' + Math.round((c.target / mb.ceiling) * 100) + '%' : ''}</div>
+                        <div className='mt-[3px] text-[11px] text-[#8b969b]'>{kindLabel(c.kind)}{mb.ceiling > 0 && c.target > 0 ? ' · ' + Math.round((c.target / mb.ceiling) * 100) + '%' : ''}</div>
                       </div>
                       <div className='shrink-0 font-mono text-[15px] text-ink'>{$(c.target, false)}</div>
                     </button>
@@ -593,7 +627,7 @@ export default function App() {
                       className='mt-3 w-full' style={{ accentColor: c.c }}
                     />
                     <div className='mt-0.5 flex justify-between font-mono text-[10.5px] text-[#b3bcbf]'>
-                      <span>0</span><span>{t('spent')} {$(c.spent)}</span><span>{$(Math.max(mb.ceiling || 200000, c.target), false)}</span>
+                      <span>0</span><span>{c.pot ? t('potBalanceLabel') + ' ' + $(c.balance) : t('spent') + ' ' + $(c.spent)}</span><span>{$(Math.max(mb.ceiling || 200000, c.target), false)}</span>
                     </div>
                   </div>
                 ))}
@@ -623,28 +657,30 @@ export default function App() {
                 <Tile cat={detCat} size={54} />
                 <div>
                   <div className='text-[21px] font-bold tracking-[-0.01em] text-ink'>{detCat.name}</div>
-                  <div className='mt-[5px] text-[12.5px] text-[#8b969b]'>{detCat.virtual ? '' : (detCat.kind === 'fixed' ? t('fixed') : t('variable')) + ' · '}{detTx.length} {t('transactions')}</div>
+                  <div className='mt-[5px] text-[12.5px] text-[#8b969b]'>{detCat.virtual ? '' : kindLabel(detCat.kind) + ' · '}{detTx.length} {t('transactions')}</div>
                 </div>
               </div>
               <div className={CARD + ' rounded-[22px] p-[18px]'}>
                 <div className='flex items-end justify-between'>
                   <div>
-                    <div className={LABEL}>{t('spent')}</div>
-                    <div className='mt-1.5 font-mono text-[28px] tracking-[-0.03em] text-ink'>{$(detCat.spent)}</div>
+                    <div className={LABEL}>{detCat.pot ? t('potBalanceLabel') : detCat.kind === 'fixed' ? t('committedLabel') : t('spent')}</div>
+                    <div className='mt-1.5 font-mono text-[28px] tracking-[-0.03em] text-ink'>{$(detCat.pot ? detCat.balance : detCat.cost)}</div>
                   </div>
                   {!detCat.virtual && (
                     <div className='text-right'>
-                      <div className={LABEL}>{t('left')}</div>
-                      <div className='mt-1.5 font-mono text-[17px]' style={{ color: detCat.meta.color }}>{$(detCat.target - detCat.spent)}</div>
+                      <div className={LABEL}>{detCat.pot ? t('perMonthAmount') : t('left')}</div>
+                      <div className='mt-1.5 font-mono text-[17px]' style={{ color: detCat.meta.color }}>
+                        {detCat.pot ? '+' + $(detCat.target) : $(detCat.target - detCat.cost)}
+                      </div>
                     </div>
                   )}
                 </div>
-                {!detCat.virtual && (
+                {!detCat.virtual && !detCat.pot && (
                   <div className='relative my-4 h-2.5 overflow-hidden rounded-full bg-[#eceff0]'>
                     <div className='h-full rounded-full bar-fill' style={{ width: detCat.w + '%', background: detCat.meta.bar }} />
                   </div>
                 )}
-                <div className={(detCat.virtual ? 'mt-3.5 ' : '') + 'text-xs leading-relaxed text-[#5b6a70]'}>{detCat.meta.text}</div>
+                <div className={(detCat.virtual || detCat.pot ? 'mt-3.5 ' : '') + 'text-xs leading-relaxed text-[#5b6a70]'}>{detCat.meta.text}</div>
               </div>
               {!detCat.virtual && (
                 <button onClick={() => go('budget')} className='my-3 flex h-[46px] w-full items-center justify-center rounded-2xl bg-deep text-[13.5px] font-semibold text-white'>{t('adjustTarget')}</button>
@@ -943,14 +979,19 @@ export default function App() {
                 <button onClick={closeSheet} aria-label={t('close')} className='grid h-[30px] w-[30px] place-items-center rounded-full bg-black/[0.06] text-[#5b6a70]'>✕</button>
               </div>
               <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={t('name')} className='mb-2.5 h-[46px] w-full rounded-2xl bg-white px-3.5 text-[14.5px] font-medium text-ink outline-none' />
-              <div className='mb-3 flex gap-2.5'>
-                <div className='flex h-[46px] flex-1 items-center gap-1 rounded-2xl bg-white px-3.5'>
-                  <span className='font-mono text-[14px] text-[#8b969b]'>€</span>
-                  <input value={form.target} onChange={(e) => setForm({ ...form, target: e.target.value.replace(/[^0-9.,]/g, '') })} inputMode='decimal' placeholder={t('target')} className='w-full bg-transparent font-mono text-[14.5px] text-ink outline-none' />
-                </div>
-                {([['variable', t('variable')], ['fixed', t('fixed')]] as const).map(([k, label]) => (
-                  <button key={k} onClick={() => setForm({ ...form, kind: k as Kind })} className={'h-[46px] flex-1 rounded-2xl text-[13px] font-semibold ' + chip(form.kind === k)}>{label}</button>
+              <div className='mb-2.5 flex h-[46px] items-center gap-1 rounded-2xl bg-white px-3.5'>
+                <span className='font-mono text-[14px] text-[#8b969b]'>€</span>
+                <input value={form.target} onChange={(e) => setForm({ ...form, target: e.target.value.replace(/[^0-9.,]/g, '') })} inputMode='decimal' placeholder={form.kind === 'saving' ? t('perMonthAmount') : t('target')} className='w-full bg-transparent font-mono text-[14.5px] text-ink outline-none' />
+              </div>
+              <div className='flex gap-2'>
+                {([['variable', t('variable')], ['fixed', t('fixed')], ['saving', t('saving')]] as const).map(([k, label]) => (
+                  <button key={k} onClick={() => { tap('light'); setForm({ ...form, kind: k as Kind }); }} className={'h-[46px] flex-1 rounded-2xl text-[13px] font-semibold ' + chip(form.kind === k)}>{label}</button>
                 ))}
+              </div>
+              {/* One line, only for what is selected: the three kinds are the one
+                  thing in here a newcomer cannot guess. */}
+              <div className='mb-3.5 mt-2 px-1 text-[11.5px] leading-relaxed text-[#8b969b]'>
+                {form.kind === 'variable' ? t('kindVariableHelp') : form.kind === 'fixed' ? t('kindFixedHelp') : t('kindSavingHelp')}
               </div>
               <div className='mb-[18px] flex gap-2.5'>
                 {PALETTE.map((p, i) => (
