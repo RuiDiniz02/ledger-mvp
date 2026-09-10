@@ -73,8 +73,8 @@ export const STARTERS: Array<{ key: string; en: string; pt: string; kind: Kind; 
   { key: 'grocery', en: 'Groceries', pt: 'Supermercado', kind: 'variable', ci: 1, mark: 'circle' },
   { key: 'dining', en: 'Dining & Leisure', pt: 'Restaurantes e Lazer', kind: 'variable', ci: 2, mark: 'ring' },
   { key: 'transport', en: 'Transport', pt: 'Transportes', kind: 'variable', ci: 3, mark: 'diamond' },
-  { key: 'invest', en: 'Investments', pt: 'Investimentos', kind: 'fixed', ci: 4, mark: 'stack' },
-  { key: 'emerg', en: 'Emergency Fund', pt: 'Fundo de Emergência', kind: 'fixed', ci: 5, mark: 'dot' },
+  { key: 'invest', en: 'Investments', pt: 'Investimentos', kind: 'saving', ci: 4, mark: 'stack' },
+  { key: 'emerg', en: 'Emergency Fund', pt: 'Fundo de Emergência', kind: 'saving', ci: 5, mark: 'dot' },
   { key: 'health', en: 'Health', pt: 'Saúde', kind: 'variable', ci: 6, mark: 'plus' },
   { key: 'subs', en: 'Subscriptions', pt: 'Subscrições', kind: 'fixed', ci: 7, mark: 'square' },
 ];
@@ -104,14 +104,69 @@ export const totalSpent = (l: Ledger, ym: string) => txOfMonth(l, ym).reduce((a,
 export const allocated = (b: MonthBudget, cats: Category[]) =>
   cats.reduce((a, c) => a + (b.targets[c.id] || 0), 0);
 
-/** Warning model: 80% (configurable) then 100%. Fixed categories read as funded. */
+/**
+ * What a category actually takes out of the month's ceiling.
+ *
+ * A fixed category is owed whether or not you have logged it, so it counts
+ * from the 1st; logging it does not double it, and logging *more* than the
+ * target (the rent went up) counts the larger amount. A saving pot costs the
+ * month exactly its contribution — money taken back out of the pot was
+ * budgeted in an earlier month and must not be charged twice.
+ */
+export function used(kind: Kind, target: number, spent: number): number {
+  if (kind === 'fixed') return Math.max(target, spent);
+  if (kind === 'saving') return Math.max(0, target);
+  return spent;
+}
+
+/** Warning model: variable warns at 80% (configurable) then 100%. */
 export function catState(kind: Kind, target: number, spent: number, warnAt = 80): CatState {
+  if (kind === 'saving') return target > 0 ? 'funded' : spent > 0 ? 'empty' : 'ok';
   if (target <= 0) return spent > 0 ? 'empty' : 'ok';
+  // A commitment is funded by definition; only paying more than planned is news.
+  if (kind === 'fixed') return spent > target ? 'over' : 'funded';
   const pct = spent / target;
   if (pct > 1) return 'over';
-  if (kind === 'fixed') return pct >= 0.995 ? 'funded' : 'ok';
   if (pct >= warnAt / 100) return 'near';
   return 'ok';
+}
+
+/** Every month from the first one on record up to and including `ym`. */
+export function monthsUpTo(l: Ledger, ym: string, cap = 600): string[] {
+  const keys = Object.keys(l.months).sort();
+  let cur = keys.length && keys[0] < ym ? keys[0] : ym;
+  if (cur > ym) return [];
+  const out: string[] = [];
+  while (cur <= ym && out.length < cap) { out.push(cur); cur = shiftYm(cur, 1); }
+  return out;
+}
+
+/**
+ * A pot's balance as of the end of `ym`: every monthly contribution since the
+ * ledger began, minus everything taken back out of it. Months the user never
+ * opened still count, because monthBudget seeds them from the last one set.
+ */
+export function potBalance(l: Ledger, catId: string, ym: string): number {
+  const paidIn = monthsUpTo(l, ym).reduce((a, k) => a + (monthBudget(l, k).targets[catId] || 0), 0);
+  const takenOut = l.tx
+    .filter((t) => t.cat === catId && ymOf(t.date) <= ym)
+    .reduce((a, t) => a + t.amount, 0);
+  return paidIn - takenOut;
+}
+
+/** What the whole month costs: committed plus actually spent, never both. */
+export function monthUsed(l: Ledger, ym: string): number {
+  const b = monthBudget(l, ym);
+  const known = new Set(l.cats.map((c) => c.id));
+  const fromCats = l.cats.reduce(
+    (a, c) => a + used(c.kind, b.targets[c.id] || 0, spentBy(l, ym, c.id)),
+    0
+  );
+  // Expenses whose category was deleted still left your account.
+  const fromOrphans = txOfMonth(l, ym)
+    .filter((t) => !known.has(t.cat))
+    .reduce((a, t) => a + t.amount, 0);
+  return fromCats + fromOrphans;
 }
 
 export function unsettled(l: Ledger, ym: string) {

@@ -1,4 +1,12 @@
-export type Kind = 'fixed' | 'variable';
+/**
+ * How a category behaves across months.
+ * - `variable`: spending that changes. Resets monthly, warns as it fills.
+ * - `fixed`: a known commitment. Counted against the month whether or not
+ *   you log it, because you owe it either way.
+ * - `saving`: a pot. The target is a monthly contribution that accumulates;
+ *   logging an expense takes money back out of the pot.
+ */
+export type Kind = 'fixed' | 'variable' | 'saving';
 export type Scope = 'mine' | 'split';
 export type Source = 'manual' | 'bank' | 'recurring';
 export type Lang = 'en' | 'pt';
