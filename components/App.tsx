@@ -467,31 +467,26 @@ export default function App() {
                         </div>
                       </div>
                     </div>
-                    <div className='flex flex-1 flex-col gap-3'>
-                      <div>
-                        <div className='text-[9.5px] font-semibold uppercase tracking-[0.1em] text-white/50'>{t('remaining')}</div>
-                        <div className='mt-1 font-mono text-[27px] tracking-[-0.03em]'>{$(remaining)}</div>
-                      </div>
-                      <div className='flex gap-4'>
-                        <div>
-                          <div className='text-[9.5px] font-semibold uppercase tracking-[0.1em] text-white/50'>{t('budgetLabel')}</div>
-                          <div className='mt-1 font-mono text-sm text-white/90'>{$(mb.ceiling, false)}</div>
-                        </div>
-                        <div>
-                          <div className='text-[9.5px] font-semibold uppercase tracking-[0.1em] text-white/50'>{t('spent')}</div>
-                          <div className='mt-1 font-mono text-sm text-white/90'>{$(spent)}</div>
-                        </div>
-                        {saved > 0 && (
-                          <div>
-                            <div className='text-[9.5px] font-semibold uppercase tracking-[0.1em] text-white/50'>{t('savedLabel')}</div>
-                            <div className='mt-1 font-mono text-sm text-[#7fd9e6]'>{$(saved)}</div>
-                          </div>
-                        )}
-                      </div>
+                    <div className='min-w-0 flex-1'>
+                      <div className='text-[9.5px] font-semibold uppercase tracking-[0.1em] text-white/50'>{t('remaining')}</div>
+                      <div className='mt-1 font-mono text-[27px] tracking-[-0.03em]'>{$(remaining)}</div>
                     </div>
                   </div>
+                  {/* Full width, below the donut: three of these never fit beside it. */}
+                  <div className='mt-[18px] flex gap-3 border-t border-white/10 pt-[15px]'>
+                    {([
+                      [t('budgetLabel'), $(mb.ceiling, false), 'rgba(255,255,255,.9)'],
+                      [t('spent'), $(spent), 'rgba(255,255,255,.9)'],
+                      ...(saved > 0 ? [[t('savedLabel'), $(saved), '#7fd9e6'] as const] : []),
+                    ] as const).map(([label, value, colour]) => (
+                      <div key={label} className='min-w-0 flex-1'>
+                        <div className='truncate text-[9.5px] font-semibold uppercase tracking-[0.1em] text-white/50'>{label}</div>
+                        <div className='mt-1 truncate font-mono text-sm' style={{ color: colour }}>{value}</div>
+                      </div>
+                    ))}
+                  </div>
                   {m.isCurrent && (
-                    <div className='mt-[18px] flex items-center justify-between border-t border-white/10 pt-[15px]'>
+                    <div className='mt-3.5 flex items-center justify-between border-t border-white/10 pt-3.5'>
                       <div className='text-[12.5px] text-white/60'>{t('safeDaily')}</div>
                       <div className='font-mono text-[15px] text-[#7fd9e6]'>{$(Math.round(varLeft / m.daysLeft))}</div>
                     </div>
