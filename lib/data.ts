@@ -1,4 +1,4 @@
-import { SCHEMA, type Category, type CatState, type Kind, type Ledger, type MarkKind, type MonthBudget } from './types';
+import { SCHEMA, type Category, type CatState, type Kind, type Ledger, type MarkKind, type MonthBudget, type Tx } from './types';
 
 /** Collision-proof even when several rows are created in the same millisecond. */
 export function uid(prefix: string): string {
@@ -173,4 +173,34 @@ export function unsettled(l: Ledger, ym: string) {
   return txOfMonth(l, ym)
     .filter((t) => t.scope === 'split' && t.paidBy === 'me')
     .reduce((a, t) => a + Math.round((t.amount * (100 - t.pct)) / 100), 0);
+}
+
+/**
+ * The last `n` months up to `ym`, oldest first, with what this category cost
+ * each month. Pots report their running balance instead, because for a pot the
+ * story is the total growing, not the monthly contribution.
+ */
+export function catHistory(l: Ledger, c: Category, ym: string, n = 6) {
+  const out: Array<{ ym: string; value: number }> = [];
+  for (let i = n - 1; i >= 0; i--) {
+    const k = shiftYm(ym, -i);
+    const b = monthBudget(l, k);
+    const value =
+      c.kind === 'saving'
+        ? potBalance(l, c.id, k)
+        : used(c.kind, b.targets[c.id] || 0, spentBy(l, k, c.id));
+    out.push({ ym: k, value });
+  }
+  return out;
+}
+
+/** Strips accents so searching "cafe" finds "café". */
+export const fold = (s: string) => s.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+
+/** Searches every month, not just the one on screen. */
+export function searchTx(l: Ledger, query: string): Tx[] {
+  const q = fold(query.trim());
+  if (!q) return [];
+  const names = new Map(l.cats.map((c) => [c.id, fold(c.name)]));
+  return l.tx.filter((t) => fold(t.note).includes(q) || (names.get(t.cat) || '').includes(q));
 }

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  catState, monthUsed, monthsUpTo, potBalance, shiftYm, unsettled, used, ymOf,
+  catHistory, catState, monthUsed, monthsUpTo, potBalance, searchTx, shiftYm, unsettled, used, ymOf,
 } from '../data.ts';
 import { money } from '../format.ts';
 import type { Kind, Ledger, Tx } from '../types.ts';
@@ -182,4 +182,64 @@ test('money: rounds to cents and never renders a stray minus on zero', () => {
   assert.equal(money(0), '€0.00');
   assert.equal(money(1250), '€12.50');
   assert.equal(money(-1250).startsWith('−'), true);
+});
+
+test('catHistory: returns n months, oldest first, ending on the month asked for', () => {
+  const l = ledger({
+    cats: [cat('food', 'variable')],
+    months: { '2026-09': { ceiling: 0, targets: { food: 50000 } } },
+    tx: [tx({ id: 'a', cat: 'food', amount: 3000, date: '2026-09-02' })],
+  });
+  const h = catHistory(l, cat('food', 'variable'), '2026-09', 3);
+  assert.deepEqual(h.map((x) => x.ym), ['2026-07', '2026-08', '2026-09']);
+  assert.equal(h[2].value, 3000);
+  assert.equal(h[0].value, 0, 'a month before the budget existed cost nothing');
+});
+
+test('catHistory: a commitment shows its cost even in months with nothing logged', () => {
+  const l = ledger({
+    cats: [cat('rent', 'fixed')],
+    months: { '2026-08': { ceiling: 0, targets: { rent: 80000 } } },
+  });
+  const h = catHistory(l, cat('rent', 'fixed'), '2026-09', 2);
+  assert.deepEqual(h.map((x) => x.value), [80000, 80000]);
+});
+
+test('catHistory: a pot reports its running balance, not the monthly amount', () => {
+  const l = ledger({
+    cats: [cat('trip', 'saving')],
+    months: { '2026-07': { ceiling: 0, targets: { trip: 10000 } } },
+  });
+  assert.deepEqual(catHistory(l, cat('trip', 'saving'), '2026-09', 3).map((x) => x.value), [10000, 20000, 30000]);
+});
+
+test('search: ignores accents and case, in both directions', () => {
+  const l = ledger({
+    cats: [cat('food', 'variable')],
+    tx: [
+      tx({ id: 'a', cat: 'food', amount: 300, date: '2026-09-02', note: 'Café da manhã' }),
+      tx({ id: 'b', cat: 'food', amount: 900, date: '2026-08-02', note: 'CAFE gelado' }),
+      tx({ id: 'c', cat: 'food', amount: 500, date: '2026-07-02', note: 'Almoço' }),
+    ],
+  });
+  assert.deepEqual(searchTx(l, 'cafe').map((x) => x.id), ['a', 'b']);
+  assert.deepEqual(searchTx(l, 'CAFÉ').map((x) => x.id), ['a', 'b']);
+  assert.deepEqual(searchTx(l, 'almoco').map((x) => x.id), ['c']);
+});
+
+test('search: reaches across months and matches the category name too', () => {
+  const l = ledger({
+    cats: [{ ...cat('food', 'variable'), name: 'Supermercado' }],
+    tx: [
+      tx({ id: 'a', cat: 'food', amount: 300, date: '2025-01-02', note: 'x' }),
+      tx({ id: 'b', cat: 'other', amount: 900, date: '2026-09-02', note: 'y' }),
+    ],
+  });
+  assert.deepEqual(searchTx(l, 'supermercado').map((x) => x.id), ['a'], 'an old month is still searchable');
+});
+
+test('search: an empty query matches nothing rather than everything', () => {
+  const l = ledger({ tx: [tx({ id: 'a', cat: 'x', amount: 1, date: '2026-09-02', note: 'z' })] });
+  assert.deepEqual(searchTx(l, ''), []);
+  assert.deepEqual(searchTx(l, '   '), []);
 });

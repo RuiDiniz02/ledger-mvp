@@ -7,7 +7,8 @@ import { useLedger } from '@/lib/store';
 import { money, dayLabel } from '@/lib/format';
 import {
   PALETTE, UNCAT_ID, allocated, catState, ensureMonth, iso, makeCategory, monthBudget, monthMeta,
-  monthUsed, orphanTx, potBalance, shiftYm, spentBy, txOfMonth, uid, uncatFor, unsettled, used, ymLabel, ymNow, ymOf,
+  catHistory, monthUsed, orphanTx, potBalance, searchTx, shiftYm, spentBy, txOfMonth, uid, uncatFor,
+  unsettled, used, ymLabel, ymNow, ymOf,
 } from '@/lib/data';
 import { copyBackup, parseBackup, readFile, saveBackup, summarize, type Summary } from '@/lib/backup';
 import { makeT } from '@/lib/i18n';
@@ -40,6 +41,7 @@ export default function App() {
   const [sheet, setSheet] = useState<Sheet>(null);
   const [viewTx, setViewTx] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'mine' | 'split'>('all');
+  const [query, setQuery] = useState('');
   const [toast, setToast] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [form, setForm] = useState<CatForm>({ id: null, name: '', kind: 'variable', ci: 4, target: '' });
@@ -83,11 +85,11 @@ export default function App() {
   useEffect(() => {
     if (overlay && !held.current) {
       held.current = true;
-      try { history.pushState({ ledgerOverlay: true }, ''); } catch { held.current = false; }
+      try { window.history.pushState({ ledgerOverlay: true }, ''); } catch { held.current = false; }
     } else if (!overlay && held.current) {
       held.current = false;
       selfPop.current = true;
-      try { history.back(); } catch { selfPop.current = false; }
+      try { window.history.back(); } catch { selfPop.current = false; }
     }
   });
   useEffect(() => {
@@ -193,6 +195,8 @@ export default function App() {
   const closeSheet = () => { tap('back'); setSheet(null); };
   const chip = (on: boolean) => (on ? 'bg-deep text-white' : 'bg-white text-[#5b6a70]');
   const kindLabel = (k: Kind) => (k === 'fixed' ? t('fixed') : k === 'saving' ? t('saving') : t('variable'));
+  const monthInitial = (k: string) => ymLabel(k, lang).slice(0, 3);
+  const nTx = (n: number) => n + ' ' + t(n === 1 ? 'unitTx' : 'unitTxs');
 
   const openLog = () => {
     tap('light');
@@ -405,9 +409,22 @@ export default function App() {
     </div>
   );
 
+  // A search reaches every month; without one, Activity stays month-scoped.
+  const hits = query.trim() ? searchTx(l, query).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)) : null;
+
   const detCat = cats.find((c) => c.id === detail);
   const detTx = !detCat ? [] : detCat.virtual ? orphans : monthTx.filter((x) => x.cat === detCat.id);
-  const filtered = monthTx.filter((x) => filter === 'all' || x.scope === filter);
+  const catMonths = detCat && !detCat.virtual ? catHistory(l, detCat, ym, 6) : [];
+  const prev = catMonths.length > 1 ? catMonths[catMonths.length - 2].value : 0;
+  const now = catMonths.length ? catMonths[catMonths.length - 1].value : 0;
+  // A pot going up is good news; a category costing more is not.
+  const trend =
+    catMonths.length < 2 || prev === 0 || now === prev
+      ? null
+      : detCat && detCat.pot
+      ? { text: (now > prev ? '+' : '−') + $(Math.abs(now - prev), false) + ' ' + t('vsLastMonth'), color: now > prev ? '#0b7b8f' : '#c8722a' }
+      : { text: $(Math.abs(now - prev), false) + ' ' + t(now > prev ? 'moreThanLast' : 'lessThanLast'), color: now > prev ? '#c8722a' : '#0b7b8f' };
+  const filtered = hits ?? monthTx.filter((x) => filter === 'all' || x.scope === filter);
   const groupMap: Record<string, Tx[]> = {};
   filtered.forEach((x) => { (groupMap[x.date] = groupMap[x.date] || []).push(x); });
   const groupKeys = Object.keys(groupMap).sort().reverse();
@@ -539,19 +556,34 @@ export default function App() {
           {screen === 'activity' && (
             <div className='px-[18px] pb-6'>
               <div className='mb-1 text-2xl font-bold tracking-[-0.015em] text-ink'>{t('activity')}</div>
-              <div className='mb-3.5 text-[13px] text-[#8b969b]'>{ymLabel(ym, lang)}</div>
-              <div className='flex gap-[7px]'>
-                {([['all', t('allActivity')], ['mine', t('justMe')], ['split', t('split5050')]] as const).map(([k, label]) => (
-                  <button key={k} onClick={() => setFilter(k as 'all' | 'mine' | 'split')} className={'flex h-8 items-center rounded-full border border-black/[0.09] px-3.5 text-[12.5px] font-semibold ' + chip(filter === k)}>{label}</button>
-                ))}
+              <div className='mb-3 text-[13px] text-[#8b969b]'>{hits ? t('searchResults') : ymLabel(ym, lang)}</div>
+              <div className='relative mb-2.5'>
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={t('searchPlaceholder')}
+                  aria-label={t('searchPlaceholder')}
+                  className='h-10 w-full rounded-xl border border-black/[0.07] bg-white pl-3.5 pr-16 text-[13px] text-ink outline-none'
+                />
+                {query !== '' && (
+                  <button onClick={() => { tap('back'); setQuery(''); }} className='absolute right-1.5 top-1.5 flex h-7 items-center rounded-lg bg-black/[0.06] px-2.5 text-[11px] font-semibold text-[#5b6a70]'>{t('clearSearch')}</button>
+                )}
               </div>
+              {/* The split filters only mean anything within one month. */}
+              {!hits && (
+                <div className='flex gap-[7px]'>
+                  {([['all', t('allActivity')], ['mine', t('justMe')], ['split', t('split5050')]] as const).map(([k, label]) => (
+                    <button key={k} onClick={() => setFilter(k as 'all' | 'mine' | 'split')} className={'flex h-8 items-center rounded-full border border-black/[0.09] px-3.5 text-[12.5px] font-semibold ' + chip(filter === k)}>{label}</button>
+                  ))}
+                </div>
+              )}
               <div className='mb-4 mt-2.5 font-mono text-[11.5px] text-[#8b969b]'>
-                {filtered.length} {t('transactions')} · {$(filtered.reduce((a, x) => a + x.amount, 0))}
+                {nTx(filtered.length)} · {$(filtered.reduce((a, x) => a + x.amount, 0))}
               </div>
               {filtered.length === 0 ? <Empty title={t('noTx')} body={t('emptyBody')} /> : groupKeys.map((k) => (
                 <div key={k} className='mb-[18px]'>
                   <div className='mx-1 mb-2 flex items-baseline justify-between'>
-                    <div className='text-[11.5px] font-bold uppercase tracking-[0.06em] text-[#8b969b]'>{dayLabel(k, lang)}</div>
+                    <div className='text-[11.5px] font-bold uppercase tracking-[0.06em] text-[#8b969b]'>{hits ? dayLabel(k, lang) + ' · ' + ymLabel(k.slice(0, 7), lang) : dayLabel(k, lang)}</div>
                     <div className='font-mono text-[11.5px] text-[#8b969b]'>{$(groupMap[k].reduce((a, x) => a + x.amount, 0))}</div>
                   </div>
                   <div className={CARD + ' overflow-hidden'}>{groupMap[k].map((x) => <Row key={x.id} tx={x} />)}</div>
@@ -657,7 +689,7 @@ export default function App() {
                 <Tile cat={detCat} size={54} />
                 <div>
                   <div className='text-[21px] font-bold tracking-[-0.01em] text-ink'>{detCat.name}</div>
-                  <div className='mt-[5px] text-[12.5px] text-[#8b969b]'>{detCat.virtual ? '' : kindLabel(detCat.kind) + ' · '}{detTx.length} {t('transactions')}</div>
+                  <div className='mt-[5px] text-[12.5px] text-[#8b969b]'>{detCat.virtual ? '' : kindLabel(detCat.kind) + ' · '}{nTx(detTx.length)}</div>
                 </div>
               </div>
               <div className={CARD + ' rounded-[22px] p-[18px]'}>
@@ -685,7 +717,32 @@ export default function App() {
               {!detCat.virtual && (
                 <button onClick={() => go('budget')} className='my-3 flex h-[46px] w-full items-center justify-center rounded-2xl bg-deep text-[13.5px] font-semibold text-white'>{t('adjustTarget')}</button>
               )}
-              <div className='mb-2.5 mt-6 text-[13px] font-bold text-ink'>{t('transactions')}</div>
+              {catMonths.some((h) => h.value !== 0) && (
+                <div className={CARD + ' mt-3 rounded-[22px] px-[18px] pb-3.5 pt-[18px]'}>
+                  <div className='flex items-baseline justify-between'>
+                    <div className={LABEL}>{t('lastMonths', { n: catMonths.length })}</div>
+                    {trend && <div className='text-[11.5px] font-medium' style={{ color: trend.color }}>{trend.text}</div>}
+                  </div>
+                  <div className='mt-3.5 flex h-[62px] items-end gap-1.5'>
+                    {catMonths.map((h, i) => {
+                      const peak = Math.max(...catMonths.map((x) => Math.abs(x.value)), 1);
+                      const last = i === catMonths.length - 1;
+                      return (
+                        <div key={h.ym} className='flex flex-1 flex-col items-center gap-1.5'>
+                          <div className='flex w-full flex-1 items-end'>
+                            <div
+                              className='w-full rounded-[4px] bar-fill'
+                              style={{ height: Math.max(2, (Math.abs(h.value) / peak) * 46) + 'px', background: last ? detCat.c : '#dfe4e6' }}
+                            />
+                          </div>
+                          <div className='font-mono text-[9.5px]' style={{ color: last ? '#16242a' : '#b3bcbf' }}>{monthInitial(h.ym)}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              <div className='mb-2.5 mt-6 text-[13px] font-bold text-ink'>{t('txHeading')}</div>
               <div className={CARD + ' overflow-hidden'}>{detTx.map((x) => <Row key={x.id} tx={x} showTile={false} />)}</div>
             </div>
           )}
