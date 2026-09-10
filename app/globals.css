@@ -19,6 +19,9 @@ a { color: #0b7b8f; text-decoration: none; }
 a:hover { color: #17a8c0; }
 
 @keyframes sheetUp { from { transform: translateY(100%);} to { transform: translateY(0);} }
+@keyframes riseIn { from { transform: translateY(8px); opacity: 0;} to { transform: translateY(0); opacity: 1;} }
+@keyframes amountBump { 0% { transform: scale(1);} 40% { transform: scale(1.045);} 100% { transform: scale(1);} }
+@keyframes barGrow { from { transform: scaleX(0);} to { transform: scaleX(1);} }
 @keyframes fadeIn { from { opacity: 0;} to { opacity: 1;} }
 @keyframes toastUp { from { transform: translateY(20px); opacity: 0;} to { transform: translateY(0); opacity: 1;} }
 @keyframes pop { from { transform: scale(.95); opacity: 0;} to { transform: scale(1); opacity: 1;} }
@@ -26,3 +29,16 @@ a:hover { color: #17a8c0; }
 .anim-fade { animation: fadeIn .2s ease-out both; }
 .anim-toast { animation: toastUp .28s cubic-bezier(.2,.9,.3,1) both; }
 .anim-pop { animation: pop .25s ease-out both; }
+.anim-rise { animation: riseIn .32s cubic-bezier(.2,.9,.3,1) both; }
+.anim-bump { animation: amountBump .16s ease-out; }
+
+/* every tappable surface reacts on press */
+button, [role="button"] { transition: transform .14s cubic-bezier(.2,.9,.3,1), opacity .14s ease, background-color .14s ease; }
+button:active { transform: scale(.965); }
+.tap-key:active { transform: scale(.92); }
+.tap-soft:active { transform: scale(.99); }
+.bar-fill { transform-origin: left center; animation: barGrow .5s cubic-bezier(.2,.9,.3,1) both; transition: width .35s cubic-bezier(.2,.9,.3,1); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}

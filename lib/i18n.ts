@@ -34,6 +34,8 @@ const en = {
   setupTargets: 'Set a target for each', setupTargetsHelp: 'Leave one at zero if you would rather decide later.',
   next: 'Next', back: 'Back', finish: 'Start using it', skip: 'Skip',
   copyPrev: 'Copied from last month', thisMonth: 'This month', perMonth: 'Budgets are per month',
+  feedback: 'Taps & sounds', feedbackBody: 'A light click and vibration on every tap.', on: 'On', off: 'Off',
+  confirmExpense: 'Confirm',
 };
 
 const pt: typeof en = {
@@ -70,6 +72,8 @@ const pt: typeof en = {
   setupTargets: 'Define um limite para cada', setupTargetsHelp: 'Deixa a zero se preferires decidir mais tarde.',
   next: 'Continuar', back: 'Voltar', finish: 'Começar', skip: 'Saltar',
   copyPrev: 'Copiado do mês anterior', thisMonth: 'Este mês', perMonth: 'Os orçamentos são mensais',
+  feedback: 'Toques e som', feedbackBody: 'Um clique leve e vibração em cada toque.', on: 'Ligado', off: 'Desligado',
+  confirmExpense: 'Confirmar',
 };
 
 export type Key = keyof typeof en;

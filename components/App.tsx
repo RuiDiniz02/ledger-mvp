@@ -10,6 +10,7 @@ import {
   shiftYm, spentBy, totalSpent, txOfMonth, unsettled, ymLabel, ymNow, ymOf,
 } from '@/lib/data';
 import { makeT } from '@/lib/i18n';
+import { tap, feedbackOn, setFeedback } from '@/lib/tap';
 import type { Category, Kind, Lang, Ledger, Tx } from '@/lib/types';
 
 const WARN_AT = 80;
@@ -34,6 +35,9 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>({ amount: '', cat: '', date: iso(new Date()), note: '', scope: 'mine', pct: 50 });
   const [form, setForm] = useState<CatForm>({ id: null, name: '', kind: 'variable', ci: 4, target: '' });
+  const [fb, setFb] = useState(true);
+
+  useEffect(() => { setFb(feedbackOn()); }, []);
 
   useEffect(() => {
     if (!toast) return;
@@ -89,10 +93,12 @@ export default function App() {
     ? { title: near[0].name + ' ' + t('runningHot'), body: near[0].meta.text + ' — ' + t('withDaysLeft', { n: m.daysLeft }) }
     : null;
 
-  const go = (s: Screen) => { setScreen(s); setDetail(null); };
+  const go = (s: Screen) => { tap('light'); setScreen(s); setDetail(null); };
+  const closeSheet = () => { tap('back'); setSheet(null); };
   const chip = (on: boolean) => (on ? 'bg-deep text-white' : 'bg-white text-[#5b6a70]');
 
   const openLog = () => {
+    tap('light');
     if (!l.cats.length) { go('budget'); setToast(t('noCatsBody')); return; }
     setDraft({ amount: '', cat: l.cats[0].id, date: iso(new Date()), note: '', scope: 'mine', pct: 50 });
     setSheet('log');
@@ -120,6 +126,7 @@ export default function App() {
         b.targets[c.id] = toCents(form.target);
       }
     });
+    tap('confirm');
     setToast(form.name.trim() + ' ' + (form.id ? t('updated') : t('added')));
     setSheet(null);
   };
@@ -162,6 +169,7 @@ export default function App() {
       });
       ensureMonth(d, ymOf(draft.date));
     });
+    tap('confirm');
     setYm(ymOf(draft.date));
     setSheet(null);
     setDraft({ amount: '', cat: draft.cat, date: iso(new Date()), note: '', scope: 'mine', pct: 50 });
@@ -171,7 +179,7 @@ export default function App() {
   const Row = ({ tx, showTile = true }: { tx: Tx; showTile?: boolean }) => {
     const c = byId[tx.cat];
     return (
-      <button onClick={() => { setViewTx(tx.id); setSheet('tx'); }} className='flex w-full items-center gap-3 border-t border-black/[0.05] px-[15px] py-3 text-left first:border-t-0'>
+      <button onClick={() => { tap('light'); setViewTx(tx.id); setSheet('tx'); }} className='flex w-full items-center gap-3 border-t border-black/[0.05] px-[15px] py-3 text-left first:border-t-0'>
         {showTile && c && <Tile cat={c} size={34} />}
         <div className='min-w-0 flex-1'>
           <div className='truncate text-[13.5px] font-semibold text-ink'>{tx.note || (c ? c.name : '—')}</div>
@@ -198,9 +206,9 @@ export default function App() {
   const groupKeys = Object.keys(groupMap).sort().reverse();
 
   return (
-    <main className='mx-auto flex min-h-screen max-w-[430px] flex-col bg-canvas shadow-[0_0_60px_-20px_rgba(18,48,58,.25)]'>
-      <div className='relative flex-1 overflow-hidden'>
-        <div className='h-full overflow-y-auto pb-[100px] pt-6'>
+    <main className='mx-auto flex h-[100dvh] max-w-[430px] flex-col overflow-hidden bg-canvas shadow-[0_0_60px_-20px_rgba(18,48,58,.25)]'>
+      <div className='relative min-h-0 flex-1'>
+        <div className='h-full overflow-y-auto overscroll-contain pb-[110px] pt-6'>
 
           {screen === 'home' && (
             <div className='px-[18px] pb-6'>
@@ -210,9 +218,9 @@ export default function App() {
                   <div className='mt-1 text-2xl font-bold tracking-[-0.015em] text-ink'>{t('overview')}</div>
                 </div>
                 <div className='flex items-center gap-1 rounded-full border border-black/[0.08] bg-white px-1.5 py-1'>
-                  <button onClick={() => setYm(shiftYm(ym, -1))} className='grid h-7 w-7 place-items-center text-[#5b6a70]'>‹</button>
+                  <button onClick={() => { tap('light'); setYm(shiftYm(ym, -1)); }} className='grid h-7 w-7 place-items-center text-[#5b6a70]'>‹</button>
                   <span className='px-1 text-[12px] font-semibold text-ink'>{ymLabel(ym, lang)}</span>
-                  <button onClick={() => setYm(shiftYm(ym, 1))} className='grid h-7 w-7 place-items-center text-[#5b6a70]'>›</button>
+                  <button onClick={() => { tap('light'); setYm(shiftYm(ym, 1)); }} className='grid h-7 w-7 place-items-center text-[#5b6a70]'>›</button>
                 </div>
               </div>
 
@@ -278,8 +286,8 @@ export default function App() {
                 <button onClick={() => go('budget')} className='block w-full text-left'><Empty title={t('noCats')} body={t('noCatsBody')} /></button>
               ) : (
                 <div className='flex flex-col gap-[9px]'>
-                  {cats.map((c) => (
-                    <button key={c.id} onClick={() => { setDetail(c.id); setScreen('detail'); }} className={CARD + ' flex w-full items-center gap-3 px-4 py-3.5 text-left'}>
+                  {cats.map((c, i) => (
+                    <button key={c.id} onClick={() => { tap('light'); setDetail(c.id); setScreen('detail'); }} className={CARD + ' anim-rise tap-soft flex w-full items-center gap-3 px-4 py-3.5 text-left'} style={{ animationDelay: Math.min(i, 6) * 40 + 'ms' }}>
                       <Tile cat={c} size={44} />
                       <div className='min-w-0 flex-1'>
                         <div className='flex items-baseline justify-between gap-2.5'>
@@ -287,7 +295,7 @@ export default function App() {
                           <div className='shrink-0 font-mono text-[12.5px] text-ink'>{$(c.spent)}</div>
                         </div>
                         <div className='my-2 h-1.5 overflow-hidden rounded-full bg-[#eceff0]'>
-                          <div className='h-full rounded-full' style={{ width: c.w + '%', background: c.meta.bar }} />
+                          <div className='h-full rounded-full bar-fill' style={{ width: c.w + '%', background: c.meta.bar }} />
                         </div>
                         <div className='flex items-center justify-between gap-2.5'>
                           <div className='text-[11.5px]' style={{ color: c.meta.color }}>{c.meta.text}</div>
@@ -339,9 +347,9 @@ export default function App() {
             <div className='px-[18px] pb-6'>
               <div className='text-2xl font-bold tracking-[-0.015em] text-ink'>{t('budget')}</div>
               <div className='mb-4 mt-1 flex items-center gap-2'>
-                <button onClick={() => setYm(shiftYm(ym, -1))} className='grid h-7 w-7 place-items-center rounded-full bg-white text-[#5b6a70] border border-black/[0.08]'>‹</button>
+                <button onClick={() => { tap('light'); setYm(shiftYm(ym, -1)); }} className='grid h-7 w-7 place-items-center rounded-full bg-white text-[#5b6a70] border border-black/[0.08]'>‹</button>
                 <span className='text-[13px] font-semibold text-ink'>{ymLabel(ym, lang)}</span>
-                <button onClick={() => setYm(shiftYm(ym, 1))} className='grid h-7 w-7 place-items-center rounded-full bg-white text-[#5b6a70] border border-black/[0.08]'>›</button>
+                <button onClick={() => { tap('light'); setYm(shiftYm(ym, 1)); }} className='grid h-7 w-7 place-items-center rounded-full bg-white text-[#5b6a70] border border-black/[0.08]'>›</button>
                 <span className='ml-auto text-[11px] text-[#8b969b]'>{t('perMonth')}</span>
               </div>
 
@@ -433,7 +441,7 @@ export default function App() {
                   </div>
                 </div>
                 <div className='relative my-4 h-2.5 overflow-hidden rounded-full bg-[#eceff0]'>
-                  <div className='h-full rounded-full' style={{ width: detCat.w + '%', background: detCat.meta.bar }} />
+                  <div className='h-full rounded-full bar-fill' style={{ width: detCat.w + '%', background: detCat.meta.bar }} />
                 </div>
                 <div className='text-xs leading-relaxed text-[#5b6a70]'>{detCat.meta.text}</div>
               </div>
@@ -452,8 +460,19 @@ export default function App() {
                 <div className={LABEL + ' mt-5'}>{t('language')}</div>
                 <div className='mt-2.5 flex gap-2.5'>
                   {(['en', 'pt'] as Lang[]).map((k) => (
-                    <button key={k} onClick={() => update((d) => { d.lang = k; })} className={'h-[46px] flex-1 rounded-2xl text-[14px] font-semibold ' + (lang === k ? 'bg-deep text-white' : 'bg-canvas text-[#5b6a70]')}>{k === 'en' ? 'English' : 'Português'}</button>
+                    <button key={k} onClick={() => { tap('light'); update((d) => { d.lang = k; }); }} className={'h-[46px] flex-1 rounded-2xl text-[14px] font-semibold ' + (lang === k ? 'bg-deep text-white' : 'bg-canvas text-[#5b6a70]')}>{k === 'en' ? 'English' : 'Português'}</button>
                   ))}
+                </div>
+                <div className={LABEL + ' mt-5'}>{t('feedback')}</div>
+                <div className='mt-2.5 flex items-center gap-3'>
+                  <div className='flex-1 text-[12px] leading-snug text-[#8b969b]'>{t('feedbackBody')}</div>
+                  <button
+                    onClick={() => { const v = !fb; setFeedback(v); setFb(v); if (v) tap('confirm'); }}
+                    className='relative h-[32px] w-[56px] shrink-0 rounded-full transition-colors'
+                    style={{ background: fb ? '#12303a' : '#dfe4e6' }}
+                  >
+                    <span className='absolute top-[3px] h-[26px] w-[26px] rounded-full bg-white shadow-[0_2px_4px_rgba(22,36,42,.2)] transition-[left] duration-200 ease-out' style={{ left: fb ? '27px' : '3px' }} />
+                  </button>
                 </div>
               </div>
 
@@ -508,20 +527,23 @@ export default function App() {
 
         {sheet === 'log' && (
           <>
-            <div className='anim-fade absolute inset-0 bg-[rgba(11,20,24,.42)]' onClick={() => setSheet(null)} />
-            <div className='anim-sheet absolute inset-x-0 bottom-0 max-h-[96%] overflow-y-auto rounded-t-[30px] bg-canvas px-[18px] pb-6 pt-2.5'>
-              <div className='mx-auto mb-3 mt-0.5 h-1 w-[38px] rounded-full bg-black/15' />
-              <div className='flex items-center justify-between'>
-                <div className='text-[17px] font-bold text-ink'>{t('newExpense')}</div>
-                <button onClick={() => setSheet(null)} className='grid h-[30px] w-[30px] place-items-center rounded-full bg-black/[0.06] text-[#5b6a70]'>✕</button>
+            <div className='anim-fade absolute inset-0 bg-[rgba(11,20,24,.42)]' onClick={closeSheet} />
+            <div className='anim-sheet absolute inset-x-0 bottom-0 flex max-h-[94%] flex-col rounded-t-[30px] bg-canvas pt-2.5'>
+              <div className='shrink-0 px-[18px]'>
+                <div className='mx-auto mb-3 mt-0.5 h-1 w-[38px] rounded-full bg-black/15' />
+                <div className='flex items-center justify-between'>
+                  <div className='text-[17px] font-bold text-ink'>{t('newExpense')}</div>
+                  <button onClick={closeSheet} className='grid h-[30px] w-[30px] place-items-center rounded-full bg-black/[0.06] text-[#5b6a70]'>✕</button>
+                </div>
+                <div className='pb-1 pt-3.5 text-center'>
+                  <div key={draft.amount} className='anim-bump font-mono text-[46px] tracking-[-0.04em]' style={{ color: draft.amount === '' ? '#c3cbce' : '#16242a' }}>€{draft.amount === '' ? '0' : draft.amount}</div>
+                  <div className='mt-2 text-[11.5px] text-[#8b969b]'>{(byId[draft.cat] ? byId[draft.cat].name : '') + ' · ' + dayLabel(draft.date, lang)}</div>
+                </div>
               </div>
-              <div className='pb-2 pt-3.5 text-center'>
-                <div className='font-mono text-[46px] tracking-[-0.04em]' style={{ color: draft.amount === '' ? '#c3cbce' : '#16242a' }}>€{draft.amount === '' ? '0' : draft.amount}</div>
-                <div className='mt-2 text-[11.5px] text-[#8b969b]'>{(byId[draft.cat] ? byId[draft.cat].name : '') + ' · ' + dayLabel(draft.date, lang)}</div>
-              </div>
+              <div className='min-h-0 flex-1 overflow-y-auto overscroll-contain px-[18px]'>
               <div className='-mx-[18px] flex gap-2.5 overflow-x-auto px-[18px] pb-3.5 pt-3'>
                 {cats.map((c) => (
-                  <button key={c.id} onClick={() => setDraft((d) => ({ ...d, cat: c.id }))} className='flex w-16 shrink-0 flex-col items-center gap-[7px]' style={{ opacity: draft.cat === c.id ? 1 : 0.42 }}>
+                  <button key={c.id} onClick={() => { tap('light'); setDraft((d) => ({ ...d, cat: c.id })); }} className='flex w-16 shrink-0 flex-col items-center gap-[7px]' style={{ opacity: draft.cat === c.id ? 1 : 0.42 }}>
                     <Tile cat={c} size={52} />
                     <div className='w-full truncate text-center text-[9.5px] font-semibold leading-tight text-[#5b6a70]'>{c.name}</div>
                   </button>
@@ -531,14 +553,14 @@ export default function App() {
                 {[0, 1].map((off) => {
                   const dd = new Date(); dd.setDate(dd.getDate() - off);
                   const v = iso(dd);
-                  return <button key={off} onClick={() => setDraft((x) => ({ ...x, date: v }))} className={'flex h-9 items-center rounded-xl px-3.5 text-[12.5px] font-semibold ' + chip(draft.date === v)}>{off === 0 ? t('today') : t('yesterday')}</button>;
+                  return <button key={off} onClick={() => { tap('light'); setDraft((x) => ({ ...x, date: v })); }} className={'flex h-9 items-center rounded-xl px-3.5 text-[12.5px] font-semibold ' + chip(draft.date === v)}>{off === 0 ? t('today') : t('yesterday')}</button>;
                 })}
                 <input type='date' value={draft.date} onChange={(e) => setDraft((d) => ({ ...d, date: e.target.value }))} className='h-9 flex-1 rounded-xl bg-white px-2.5 font-mono text-[12.5px] text-ink' />
               </div>
               <div className='mb-2.5 flex gap-2'>
                 {([['mine', t('justMe')], ['half', t('split5050')], ['custom', t('customPct')]] as const).map(([k, label]) => {
                   const on = k === 'mine' ? draft.scope === 'mine' : k === 'half' ? draft.scope === 'split' && draft.pct === 50 : draft.scope === 'split' && draft.pct !== 50;
-                  return <button key={k} onClick={() => setDraft((d) => (k === 'mine' ? { ...d, scope: 'mine' } : { ...d, scope: 'split', pct: k === 'half' ? 50 : d.pct === 50 ? 60 : d.pct }))} className={'h-9 flex-1 rounded-xl text-[12.5px] font-semibold ' + chip(on)}>{label}</button>;
+                  return <button key={k} onClick={() => { tap('light'); setDraft((d) => (k === 'mine' ? { ...d, scope: 'mine' } : { ...d, scope: 'split', pct: k === 'half' ? 50 : d.pct === 50 ? 60 : d.pct })); }} className={'h-9 flex-1 rounded-xl text-[12.5px] font-semibold ' + chip(on)}>{label}</button>;
                 })}
               </div>
               {draft.scope === 'split' && (
@@ -557,14 +579,22 @@ export default function App() {
                 </div>
               )}
               <input value={draft.note} onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} placeholder={t('note')} className='mb-3.5 h-10 w-full rounded-xl bg-white px-3.5 text-[13.5px] text-ink outline-none' />
+              </div>
+              <div className='shrink-0 border-t border-black/[0.06] px-[18px] pb-[22px] pt-3'>
               <div className='grid grid-cols-3 gap-2'>
                 {['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 'del'].map((k) => (
-                  <button key={k} onClick={() => pressKey(k)} className='grid h-[50px] select-none place-items-center rounded-[15px] bg-white font-mono text-[21px] text-ink shadow-[0_1px_2px_rgba(22,36,42,.06)] active:bg-[#e9eef0]'>{k === 'del' ? '⌫' : k}</button>
+                  <button key={k} onClick={() => { tap(k === 'del' ? 'back' : 'key'); pressKey(k); }} className='tap-key grid h-[50px] select-none place-items-center rounded-[15px] bg-white font-mono text-[21px] text-ink shadow-[0_1px_2px_rgba(22,36,42,.06)] active:bg-[#e9eef0]'>{k === 'del' ? '⌫' : k}</button>
                 ))}
               </div>
-              <button onClick={saveTx} disabled={amountValue <= 0} className='mt-3 h-[54px] w-full rounded-[18px] text-[15px] font-bold text-white' style={{ background: amountValue > 0 ? '#12303a' : 'rgba(22,36,42,.22)' }}>
-                {amountValue > 0 ? t('save') + ' ' + $(Math.round(amountValue * 100)) : t('enterAmount')}
+              <button onClick={saveTx} disabled={amountValue <= 0} className='mt-3 flex h-[54px] w-full items-center justify-center gap-2.5 rounded-[18px] text-[15px] font-bold text-white transition-colors' style={{ background: amountValue > 0 ? '#12303a' : 'rgba(22,36,42,.22)' }}>
+                {amountValue > 0 && (
+                  <span className='grid h-[22px] w-[22px] place-items-center rounded-full bg-[#7fd9e6]'>
+                    <span className='-mt-0.5 block h-1 w-2 -rotate-45 border-b-2 border-l-2 border-deep' />
+                  </span>
+                )}
+                {amountValue > 0 ? t('confirmExpense') + ' · ' + $(Math.round(amountValue * 100)) : t('enterAmount')}
               </button>
+              </div>
             </div>
           </>
         )}
@@ -575,7 +605,7 @@ export default function App() {
           const c = byId[x.cat];
           return (
             <>
-              <div className='anim-fade absolute inset-0 bg-[rgba(11,20,24,.42)]' onClick={() => setSheet(null)} />
+              <div className='anim-fade absolute inset-0 bg-[rgba(11,20,24,.42)]' onClick={closeSheet} />
               <div className='anim-sheet absolute inset-x-0 bottom-0 rounded-t-[30px] bg-canvas px-[18px] pb-6 pt-2.5'>
                 <div className='mx-auto mb-[18px] mt-0.5 h-1 w-[38px] rounded-full bg-black/15' />
                 <div className='mb-5 flex items-center gap-3.5'>
@@ -587,8 +617,8 @@ export default function App() {
                   <div className='font-mono text-2xl tracking-[-0.02em] text-ink'>{$(x.amount)}</div>
                 </div>
                 <div className='flex gap-2.5'>
-                  <button onClick={() => setSheet(null)} className='h-[50px] flex-1 rounded-[17px] bg-white text-sm font-semibold text-ink'>{t('close')}</button>
-                  <button onClick={() => { update((d) => { d.tx = d.tx.filter((r) => r.id !== x.id); }); setSheet(null); setToast(t('deleted')); }} className='h-[50px] flex-1 rounded-[17px] bg-[#ec6a86] text-sm font-semibold text-white'>{t('deleteTx')}</button>
+                  <button onClick={closeSheet} className='h-[50px] flex-1 rounded-[17px] bg-white text-sm font-semibold text-ink'>{t('close')}</button>
+                  <button onClick={() => { tap('back'); update((d) => { d.tx = d.tx.filter((r) => r.id !== x.id); }); setSheet(null); setToast(t('deleted')); }} className='h-[50px] flex-1 rounded-[17px] bg-[#ec6a86] text-sm font-semibold text-white'>{t('deleteTx')}</button>
                 </div>
               </div>
             </>
@@ -597,7 +627,7 @@ export default function App() {
 
         {sheet === 'cat' && (
           <>
-            <div className='anim-fade absolute inset-0 bg-[rgba(11,20,24,.42)]' onClick={() => setSheet(null)} />
+            <div className='anim-fade absolute inset-0 bg-[rgba(11,20,24,.42)]' onClick={closeSheet} />
             <div className='anim-sheet absolute inset-x-0 bottom-0 rounded-t-[30px] bg-canvas px-[18px] pb-6 pt-2.5'>
               <div className='mx-auto mb-3.5 mt-0.5 h-1 w-[38px] rounded-full bg-black/15' />
               <div className='mb-4 text-[17px] font-bold text-ink'>{form.id ? t('editCategory') : t('newCategory')}</div>
@@ -613,7 +643,7 @@ export default function App() {
               </div>
               <div className='mb-[18px] flex gap-2.5'>
                 {PALETTE.map((p, i) => (
-                  <button key={i} onClick={() => setForm({ ...form, ci: i })} className='h-10 flex-1 rounded-[13px]' style={{ background: 'linear-gradient(155deg,' + p.cl + ',' + p.c + ' 60%,' + p.cd + ')', boxShadow: form.ci === i ? '0 0 0 3px #12303a' : 'inset 0 1px 0 rgba(255,255,255,.5)' }} />
+                  <button key={i} onClick={() => { tap('light'); setForm({ ...form, ci: i }); }} className='h-10 flex-1 rounded-[13px]' style={{ background: 'linear-gradient(155deg,' + p.cl + ',' + p.c + ' 60%,' + p.cd + ')', boxShadow: form.ci === i ? '0 0 0 3px #12303a' : 'inset 0 1px 0 rgba(255,255,255,.5)' }} />
                 ))}
               </div>
               <button onClick={saveCat} className='h-[54px] w-full rounded-[18px] text-[15px] font-bold text-white' style={{ background: form.name.trim() ? '#12303a' : 'rgba(22,36,42,.22)' }}>
@@ -626,7 +656,7 @@ export default function App() {
           </>
         )}
 
-        <nav className='absolute inset-x-0 bottom-0 flex h-[82px] items-start border-t border-black/[0.07] bg-white/95 px-2 pt-2.5 backdrop-blur-xl'>
+        <nav className='absolute inset-x-0 bottom-0 z-10 flex h-[82px] items-start border-t border-black/[0.07] bg-white/95 px-2 pt-2.5 backdrop-blur-xl' style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
           {([['home', t('overview')], ['activity', t('activity')], ['spacer', ''], ['budget', t('budget')], ['me', t('account')]] as const).map(([k, label]) =>
             k === 'spacer' ? (
               <div key='spacer' className='flex-1' />
