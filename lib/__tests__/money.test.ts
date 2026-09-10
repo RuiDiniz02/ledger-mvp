@@ -272,3 +272,46 @@ test('splitsOn: an explicit choice always wins over the guess', () => {
   assert.equal(splitsOn(ledger({ splits: false, tx: withSplit })), false);
   assert.equal(splitsOn(ledger({ splits: true })), true);
 });
+
+test('the pot cycle: save for four months, take it all out, start again', () => {
+  const targets = { trip: 20000 };
+  const months = Object.fromEntries(
+    ['2026-06', '2026-07', '2026-08', '2026-09'].map((k) => [k, { ceiling: 200000, targets }])
+  );
+  const base = ledger({ cats: [cat('trip', 'saving'), cat('food', 'variable')], months });
+
+  // Four months of putting 200 aside.
+  assert.equal(potBalance(base, 'trip', '2026-09'), 80000);
+
+  const after = { ...base, tx: [tx({ id: 'w', cat: 'trip', amount: 80000, date: '2026-09-10' })] };
+  assert.equal(potBalance(after, 'trip', '2026-09'), 0, 'the pot is emptied');
+
+  // The trip did not eat September: that money was charged to the months that saved it.
+  assert.equal(monthSpent(after, '2026-09'), 0);
+  assert.equal(monthSaved(after, '2026-09'), 20000, 'September still put its own 200 aside');
+
+  // October keeps contributing, so the pot starts building again.
+  assert.equal(potBalance(after, 'trip', '2026-10'), 20000);
+});
+
+test('the pot cycle: an earlier month is unaffected by a later withdrawal', () => {
+  const targets = { trip: 20000 };
+  const months = Object.fromEntries(
+    ['2026-06', '2026-07', '2026-08', '2026-09'].map((k) => [k, { ceiling: 200000, targets }])
+  );
+  const l = ledger({
+    cats: [cat('trip', 'saving')],
+    months,
+    tx: [tx({ id: 'w', cat: 'trip', amount: 80000, date: '2026-09-10' })],
+  });
+  assert.equal(potBalance(l, 'trip', '2026-08'), 60000, 'August still had three months saved');
+});
+
+test('the pot cycle: taking out more than the pot holds goes negative rather than being hidden', () => {
+  const l = ledger({
+    cats: [cat('trip', 'saving')],
+    months: { '2026-09': { ceiling: 0, targets: { trip: 10000 } } },
+    tx: [tx({ id: 'w', cat: 'trip', amount: 30000, date: '2026-09-10' })],
+  });
+  assert.equal(potBalance(l, 'trip', '2026-09'), -20000);
+});

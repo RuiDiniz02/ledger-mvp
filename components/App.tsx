@@ -200,12 +200,12 @@ export default function App() {
   const monthInitial = (k: string) => ymLabel(k, lang).slice(0, 3);
   const nTx = (n: number) => n + ' ' + t(n === 1 ? 'unitTx' : 'unitTxs');
 
-  const openLog = () => {
+  const openLog = (preset?: string) => {
     tap('light');
     if (!l.cats.length) { go('budget'); setToast(t('noCatsBody')); return; }
     const recent = l.tx.length ? l.tx[l.tx.length - 1].cat : null;
-    const start = recent && l.cats.some((c) => c.id === recent) ? recent : l.cats[0].id;
-    setDraft({ ...emptyDraft(), cat: start });
+    const fallback = recent && l.cats.some((c) => c.id === recent) ? recent : l.cats[0].id;
+    setDraft({ ...emptyDraft(), cat: preset && l.cats.some((c) => c.id === preset) ? preset : fallback });
     setSheet('log');
   };
 
@@ -320,7 +320,11 @@ export default function App() {
     setYm(ymOf(draft.date));
     setSheet(null);
     setDraft({ ...emptyDraft(), cat: draft.cat });
-    setToast(editing ? t('txUpdated') + ' · ' + $(cents) : t('logged') + ' ' + $(cents) + ' · ' + cat.name);
+    setToast(
+      editing ? t('txUpdated') + ' · ' + $(cents)
+      : cat.kind === 'saving' ? t('potWithdrawn', { name: cat.name }) + ' · ' + $(cents)
+      : t('logged') + ' ' + $(cents) + ' · ' + cat.name
+    );
   };
 
   keys.current = { press: pressKey, save: saveTx };
@@ -394,7 +398,7 @@ export default function App() {
         <div className='min-w-0 flex-1'>
           <div className='truncate text-[13.5px] font-semibold text-ink'>{tx.note || (c ? c.name : '—')}</div>
           <div className='mt-[3px] text-[11.5px] text-[#8b969b]'>
-            {(c ? c.name : '—') + ' · ' + dayLabel(tx.date, lang) + (tx.scope === 'split' ? ' · ' + tx.pct + '/' + (100 - tx.pct) : '')}
+            {(c ? c.name : '—') + ' · ' + dayLabel(tx.date, lang) + (c && c.pot ? ' · ' + t('fromPot') : '') + (tx.scope === 'split' ? ' · ' + tx.pct + '/' + (100 - tx.pct) : '')}
           </div>
         </div>
         <div className='font-mono text-[13.5px] text-ink'>{$(tx.amount)}</div>
@@ -720,9 +724,18 @@ export default function App() {
                 )}
                 <div className={(detCat.virtual || detCat.pot ? 'mt-3.5 ' : '') + 'text-xs leading-relaxed text-[#5b6a70]'}>{detCat.meta.text}</div>
               </div>
-              {!detCat.virtual && (
+              {detCat.pot ? (
+                <button
+                  onClick={() => openLog(detCat.id)}
+                  disabled={detCat.balance <= 0}
+                  className='my-3 flex h-[46px] w-full items-center justify-center rounded-2xl text-[13.5px] font-semibold text-white transition-colors'
+                  style={{ background: detCat.balance > 0 ? '#12303a' : 'rgba(22,36,42,.22)' }}
+                >
+                  {detCat.balance > 0 ? t('takeFromPotBtn') : t('potEmpty')}
+                </button>
+              ) : !detCat.virtual ? (
                 <button onClick={() => go('budget')} className='my-3 flex h-[46px] w-full items-center justify-center rounded-2xl bg-deep text-[13.5px] font-semibold text-white'>{t('adjustTarget')}</button>
-              )}
+              ) : null}
               {catMonths.some((h) => h.value !== 0) && (
                 <div className={CARD + ' mt-3 rounded-[22px] px-[18px] pb-3.5 pt-[18px]'}>
                   <div className='flex items-baseline justify-between'>
@@ -902,11 +915,11 @@ export default function App() {
         {sheet === 'log' && (
           <>
             <div className={SCRIM} onClick={closeSheet} />
-            <div role='dialog' aria-modal='true' aria-label={draft.id ? t('editExpense') : t('newExpense')} className={SHEET + ' flex max-h-[96%] flex-col pt-2.5'}>
+            <div role='dialog' aria-modal='true' aria-label={draft.id ? t('editExpense') : draftCat?.pot ? t('takeFromPotBtn') : t('newExpense')} className={SHEET + ' flex max-h-[96%] flex-col pt-2.5'}>
               <div className='shrink-0 px-[18px]'>
                 <div className='mx-auto mb-3 mt-0.5 h-1 w-[38px] rounded-full bg-black/15' />
                 <div className='flex items-center justify-between'>
-                  <div className='text-[17px] font-bold text-ink'>{draft.id ? t('editExpense') : t('newExpense')}</div>
+                  <div className='text-[17px] font-bold text-ink'>{draft.id ? t('editExpense') : draftCat?.pot ? t('takeFromPotBtn') : t('newExpense')}</div>
                   <button onClick={closeSheet} aria-label={t('close')} className='grid h-[30px] w-[30px] place-items-center rounded-full bg-black/[0.06] text-[#5b6a70]'>✕</button>
                 </div>
                 <div className='relative pb-0.5 pt-2'>
@@ -990,7 +1003,7 @@ export default function App() {
                       <span className='-mt-0.5 block h-1 w-2 -rotate-45 border-b-2 border-l-2 border-deep' />
                     </span>
                   )}
-                  {amountValue > 0 ? (draft.id ? t('saveChanges') : t('confirmExpense')) + ' · ' + $(draftCents) : t('enterAmount')}
+                  {amountValue > 0 ? (draft.id ? t('saveChanges') : draftCat?.pot ? t('takeAction') : t('confirmExpense')) + ' · ' + $(draftCents) : t('enterAmount')}
                 </button>
               </div>
             </div>
@@ -1168,7 +1181,7 @@ export default function App() {
               </button>
             )
           )}
-          <button onClick={openLog} aria-label={t('newExpense')} className='absolute left-1/2 top-[-16px] grid h-[58px] w-[58px] -translate-x-1/2 place-items-center rounded-[22px]' style={{ background: 'linear-gradient(155deg,#7fd9e6,#17a8c0 58%,#0b7b8f)', boxShadow: '0 12px 22px -8px rgba(11,123,143,.75), inset 0 1px 0 rgba(255,255,255,.5)' }}>
+          <button onClick={() => openLog()} aria-label={t('newExpense')} className='absolute left-1/2 top-[-16px] grid h-[58px] w-[58px] -translate-x-1/2 place-items-center rounded-[22px]' style={{ background: 'linear-gradient(155deg,#7fd9e6,#17a8c0 58%,#0b7b8f)', boxShadow: '0 12px 22px -8px rgba(11,123,143,.75), inset 0 1px 0 rgba(255,255,255,.5)' }}>
             <div className='relative grid h-[22px] w-[22px] place-items-center'>
               <div className='absolute h-[3px] w-5 rounded-sm bg-white' />
               <div className='absolute h-5 w-[3px] rounded-sm bg-white' />
