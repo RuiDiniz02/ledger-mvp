@@ -36,6 +36,9 @@ const en = {
   copyPrev: 'Copied from last month', thisMonth: 'This month', perMonth: 'Budgets are per month',
   feedback: 'Taps & sounds', feedbackBody: 'A light click and vibration on every tap.', on: 'On', off: 'Off',
   confirmExpense: 'Confirm',
+  amountLabel: 'Amount', catLabel: 'Category', dateLabel: 'Date', splitLabel: 'Who pays', noteLabel: 'Description',
+  clearAmount: 'Clear', leftAfter: 'left in {name} after this', willExceed: 'Puts {name} {amount} over target',
+  noTargetYet: 'No target set for {name}', tapAgainToDelete: 'Tap again to delete', cancel: 'Cancel',
 };
 
 const pt: typeof en = {
@@ -74,6 +77,9 @@ const pt: typeof en = {
   copyPrev: 'Copiado do mês anterior', thisMonth: 'Este mês', perMonth: 'Os orçamentos são mensais',
   feedback: 'Toques e som', feedbackBody: 'Um clique leve e vibração em cada toque.', on: 'Ligado', off: 'Desligado',
   confirmExpense: 'Confirmar',
+  amountLabel: 'Valor', catLabel: 'Categoria', dateLabel: 'Data', splitLabel: 'Quem paga', noteLabel: 'Descrição',
+  clearAmount: 'Limpar', leftAfter: 'ficam em {name} depois desta', willExceed: 'Passa o limite de {name} em {amount}',
+  noTargetYet: 'Sem limite definido para {name}', tapAgainToDelete: 'Toca outra vez para apagar', cancel: 'Cancelar',
 };
 
 export type Key = keyof typeof en;

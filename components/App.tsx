@@ -1,12 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Tile, TabIcon } from './Icons';
 import Onboarding from './Onboarding';
 import { useLedger } from '@/lib/store';
 import { money, dayLabel } from '@/lib/format';
 import {
-  PALETTE, MARKS, allocated, catState, ensureMonth, iso, makeCategory, monthBudget, monthMeta,
+  PALETTE, allocated, catState, ensureMonth, iso, makeCategory, monthBudget, monthMeta,
   shiftYm, spentBy, totalSpent, txOfMonth, unsettled, ymLabel, ymNow, ymOf,
 } from '@/lib/data';
 import { makeT } from '@/lib/i18n';
@@ -16,6 +16,9 @@ import type { Category, Kind, Lang, Ledger, Tx } from '@/lib/types';
 const WARN_AT = 80;
 const CARD = 'rounded-[20px] border border-black/[0.06] bg-white';
 const LABEL = 'text-[10px] font-semibold uppercase tracking-[0.12em] text-[#8b969b]';
+/** Sheets must sit above the tab bar (z-10), which owns the bottom 82px. */
+const SCRIM = 'anim-fade absolute inset-0 z-40 bg-[rgba(11,20,24,.42)]';
+const SHEET = 'anim-sheet absolute inset-x-0 bottom-0 z-50 rounded-t-[30px] bg-canvas';
 
 type Screen = 'home' | 'activity' | 'budget' | 'me' | 'detail';
 type Draft = { amount: string; cat: string; date: string; note: string; scope: 'mine' | 'split'; pct: number };
@@ -36,6 +39,9 @@ export default function App() {
   const [draft, setDraft] = useState<Draft>({ amount: '', cat: '', date: iso(new Date()), note: '', scope: 'mine', pct: 50 });
   const [form, setForm] = useState<CatForm>({ id: null, name: '', kind: 'variable', ci: 4, target: '' });
   const [fb, setFb] = useState(true);
+  // Raw keystrokes for the ceiling field, so "12.50" survives being typed.
+  const [ceilDraft, setCeilDraft] = useState<string | null>(null);
+  const [armDelete, setArmDelete] = useState(false);
 
   useEffect(() => { setFb(feedbackOn()); }, []);
 
@@ -44,6 +50,27 @@ export default function App() {
     const x = setTimeout(() => setToast(null), 2400);
     return () => clearTimeout(x);
   }, [toast]);
+
+  useEffect(() => { setCeilDraft(null); }, [ym]);
+  useEffect(() => { setArmDelete(false); }, [sheet, viewTx]);
+
+  // A sheet is a modal: Escape closes it, and on desktop a physical keyboard drives the keypad.
+  const keys = useRef<{ press: (k: string) => void; save: () => void } | null>(null);
+  useEffect(() => {
+    if (!sheet) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); tap('back'); setSheet(null); return; }
+      if (sheet !== 'log' || !keys.current) return;
+      const el = document.activeElement;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return;
+      if (/^[0-9]$/.test(e.key)) { e.preventDefault(); keys.current.press(e.key); }
+      else if (e.key === '.' || e.key === ',') { e.preventDefault(); keys.current.press('.'); }
+      else if (e.key === 'Backspace') { e.preventDefault(); keys.current.press('del'); }
+      else if (e.key === 'Enter') { e.preventDefault(); keys.current.save(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [sheet]);
 
   if (!data) return <main className='min-h-screen' />;
   const l: Ledger = data;
@@ -93,14 +120,17 @@ export default function App() {
     ? { title: near[0].name + ' ' + t('runningHot'), body: near[0].meta.text + ' — ' + t('withDaysLeft', { n: m.daysLeft }) }
     : null;
 
-  const go = (s: Screen) => { tap('light'); setScreen(s); setDetail(null); };
+  // Navigating always dismisses an open sheet, so it can never hang over another screen.
+  const go = (s: Screen) => { tap('light'); setSheet(null); setScreen(s); setDetail(null); };
   const closeSheet = () => { tap('back'); setSheet(null); };
   const chip = (on: boolean) => (on ? 'bg-deep text-white' : 'bg-white text-[#5b6a70]');
 
   const openLog = () => {
     tap('light');
     if (!l.cats.length) { go('budget'); setToast(t('noCatsBody')); return; }
-    setDraft({ amount: '', cat: l.cats[0].id, date: iso(new Date()), note: '', scope: 'mine', pct: 50 });
+    const recent = l.tx.length ? l.tx[l.tx.length - 1].cat : null;
+    const start = recent && l.cats.some((c) => c.id === recent) ? recent : l.cats[0].id;
+    setDraft({ amount: '', cat: start, date: iso(new Date()), note: '', scope: 'mine', pct: 50 });
     setSheet('log');
   };
   const openCatForm = (c?: Category) => {
@@ -175,6 +205,20 @@ export default function App() {
     setDraft({ amount: '', cat: draft.cat, date: iso(new Date()), note: '', scope: 'mine', pct: 50 });
     setToast(t('logged') + ' ' + $(cents) + ' · ' + cat.name);
   };
+
+  keys.current = { press: pressKey, save: saveTx };
+
+  // Live impact of the draft on the chosen category, shown while typing.
+  const draftCat = byId[draft.cat];
+  const draftCents = Math.round(amountValue * 100);
+  const draftShare = draft.scope === 'split' ? Math.round((draftCents * draft.pct) / 100) : draftCents;
+  const impact = !draftCat
+    ? null
+    : draftCat.target <= 0
+    ? { over: false, text: t('noTargetYet', { name: draftCat.name }) }
+    : draftCat.spent + draftShare > draftCat.target
+    ? { over: true, text: t('willExceed', { name: draftCat.name, amount: $(draftCat.spent + draftShare - draftCat.target) }) }
+    : { over: false, text: $(draftCat.target - draftCat.spent - draftShare) + ' ' + t('leftAfter', { name: draftCat.name }) };
 
   const Row = ({ tx, showTile = true }: { tx: Tx; showTile?: boolean }) => {
     const c = byId[tx.cat];
@@ -358,10 +402,17 @@ export default function App() {
                 <div className='my-3 flex items-center gap-2 rounded-2xl bg-canvas px-4 py-3'>
                   <span className='font-mono text-[24px] text-[#8b969b]'>€</span>
                   <input
-                    value={fromCents(mb.ceiling)}
-                    onChange={(e) => { const v = toCents(e.target.value.replace(/[^0-9.,]/g, '')); update((d) => { ensureMonth(d, ym).ceiling = v; }); }}
+                    value={ceilDraft ?? fromCents(mb.ceiling)}
+                    onChange={(e) => {
+                      const raw = e.target.value.replace(/[^0-9.,]/g, '');
+                      setCeilDraft(raw);
+                      const v = toCents(raw);
+                      update((d) => { ensureMonth(d, ym).ceiling = v; });
+                    }}
+                    onBlur={() => setCeilDraft(null)}
                     inputMode='decimal'
                     placeholder='0'
+                    aria-label={t('monthlyCeiling')}
                     className='w-full bg-transparent font-mono text-[28px] tracking-[-0.03em] text-ink outline-none'
                   />
                 </div>
@@ -517,7 +568,7 @@ export default function App() {
         </div>
 
         {toast && (
-          <div className='anim-toast absolute bottom-[100px] left-4 right-4 flex items-center gap-3 rounded-2xl bg-deep px-4 py-3.5 shadow-[0_14px_28px_-14px_rgba(18,48,58,.8)]'>
+          <div className='anim-toast absolute bottom-[100px] left-4 right-4 z-30 flex items-center gap-3 rounded-2xl bg-deep px-4 py-3.5 shadow-[0_14px_28px_-14px_rgba(18,48,58,.8)]'>
             <div className='grid h-5 w-5 shrink-0 place-items-center rounded-full bg-[#7fd9e6]'>
               <div className='-mt-0.5 h-1 w-2 -rotate-45 border-b-2 border-l-2 border-deep' />
             </div>
@@ -527,73 +578,97 @@ export default function App() {
 
         {sheet === 'log' && (
           <>
-            <div className='anim-fade absolute inset-0 bg-[rgba(11,20,24,.42)]' onClick={closeSheet} />
-            <div className='anim-sheet absolute inset-x-0 bottom-0 flex max-h-[94%] flex-col rounded-t-[30px] bg-canvas pt-2.5'>
+            <div className={SCRIM} onClick={closeSheet} />
+            <div role='dialog' aria-modal='true' aria-label={t('newExpense')} className={SHEET + ' flex max-h-[96%] flex-col pt-2.5'}>
               <div className='shrink-0 px-[18px]'>
                 <div className='mx-auto mb-3 mt-0.5 h-1 w-[38px] rounded-full bg-black/15' />
                 <div className='flex items-center justify-between'>
                   <div className='text-[17px] font-bold text-ink'>{t('newExpense')}</div>
-                  <button onClick={closeSheet} className='grid h-[30px] w-[30px] place-items-center rounded-full bg-black/[0.06] text-[#5b6a70]'>✕</button>
+                  <button onClick={closeSheet} aria-label={t('close')} className='grid h-[30px] w-[30px] place-items-center rounded-full bg-black/[0.06] text-[#5b6a70]'>✕</button>
                 </div>
-                <div className='pb-1 pt-3.5 text-center'>
-                  <div key={draft.amount} className='anim-bump font-mono text-[46px] tracking-[-0.04em]' style={{ color: draft.amount === '' ? '#c3cbce' : '#16242a' }}>€{draft.amount === '' ? '0' : draft.amount}</div>
-                  <div className='mt-2 text-[11.5px] text-[#8b969b]'>{(byId[draft.cat] ? byId[draft.cat].name : '') + ' · ' + dayLabel(draft.date, lang)}</div>
+                <div className='relative pb-0.5 pt-2'>
+                  <div key={draft.amount} className='anim-bump text-center font-mono text-[38px] leading-none tracking-[-0.04em]' style={{ color: draft.amount === '' ? '#c3cbce' : '#16242a' }}>€{draft.amount === '' ? '0' : draft.amount}</div>
+                  {draft.amount !== '' && (
+                    <button onClick={() => { tap('back'); setDraft((d) => ({ ...d, amount: '' })); }} className='absolute right-0 top-1 flex h-7 items-center rounded-full bg-black/[0.06] px-3 text-[11px] font-semibold text-[#5b6a70]'>{t('clearAmount')}</button>
+                  )}
+                  {impact && (
+                    <div className='mt-2 text-center text-[11.5px] font-medium' style={{ color: impact.over ? '#d8365b' : '#8b969b' }}>{impact.text}</div>
+                  )}
                 </div>
               </div>
-              <div className='min-h-0 flex-1 overflow-y-auto overscroll-contain px-[18px]'>
-              <div className='-mx-[18px] flex gap-2.5 overflow-x-auto px-[18px] pb-3.5 pt-3'>
-                {cats.map((c) => (
-                  <button key={c.id} onClick={() => { tap('light'); setDraft((d) => ({ ...d, cat: c.id })); }} className='flex w-16 shrink-0 flex-col items-center gap-[7px]' style={{ opacity: draft.cat === c.id ? 1 : 0.42 }}>
-                    <Tile cat={c} size={52} />
-                    <div className='w-full truncate text-center text-[9.5px] font-semibold leading-tight text-[#5b6a70]'>{c.name}</div>
-                  </button>
-                ))}
-              </div>
-              <div className='mb-2.5 flex gap-2'>
-                {[0, 1].map((off) => {
-                  const dd = new Date(); dd.setDate(dd.getDate() - off);
-                  const v = iso(dd);
-                  return <button key={off} onClick={() => { tap('light'); setDraft((x) => ({ ...x, date: v })); }} className={'flex h-9 items-center rounded-xl px-3.5 text-[12.5px] font-semibold ' + chip(draft.date === v)}>{off === 0 ? t('today') : t('yesterday')}</button>;
-                })}
-                <input type='date' value={draft.date} onChange={(e) => setDraft((d) => ({ ...d, date: e.target.value }))} className='h-9 flex-1 rounded-xl bg-white px-2.5 font-mono text-[12.5px] text-ink' />
-              </div>
-              <div className='mb-2.5 flex gap-2'>
-                {([['mine', t('justMe')], ['half', t('split5050')], ['custom', t('customPct')]] as const).map(([k, label]) => {
-                  const on = k === 'mine' ? draft.scope === 'mine' : k === 'half' ? draft.scope === 'split' && draft.pct === 50 : draft.scope === 'split' && draft.pct !== 50;
-                  return <button key={k} onClick={() => { tap('light'); setDraft((d) => (k === 'mine' ? { ...d, scope: 'mine' } : { ...d, scope: 'split', pct: k === 'half' ? 50 : d.pct === 50 ? 60 : d.pct })); }} className={'h-9 flex-1 rounded-xl text-[12.5px] font-semibold ' + chip(on)}>{label}</button>;
-                })}
-              </div>
-              {draft.scope === 'split' && (
-                <div className='mb-2.5 flex items-center gap-3 rounded-2xl bg-white p-3'>
-                  <button onClick={() => setDraft((d) => ({ ...d, pct: Math.max(0, d.pct - 5) }))} className='grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-canvas'>
-                    <div className='h-[2.5px] w-2.5 rounded-sm bg-ink' />
-                  </button>
-                  <div className='flex-1 text-center'>
-                    <div className='font-mono text-[13px] text-ink'>{t('you')} {draft.pct}% · {t('partner')} {100 - draft.pct}%</div>
-                    <div className='mt-1.5 text-[10.5px] text-[#8b969b]'>{$(Math.round((amountValue * 100 * draft.pct) / 100))} {t('countsAgainst')}</div>
+
+              <div className='min-h-0 flex-1 overflow-y-auto overscroll-contain px-[18px] pt-1'>
+                <div className={LABEL + ' mb-2 mt-2'}>{t('catLabel')}</div>
+                <div className='-mx-[18px] flex gap-2.5 overflow-x-auto px-[18px] pb-1'>
+                  {cats.map((c) => {
+                    const on = draft.cat === c.id;
+                    return (
+                      <button key={c.id} onClick={() => { tap('light'); setDraft((d) => ({ ...d, cat: c.id })); }} aria-pressed={on} className='flex w-[68px] shrink-0 flex-col items-center gap-[7px] pt-1'>
+                        <span className='relative block rounded-[16px]' style={{ boxShadow: on ? '0 0 0 2.5px #12303a' : 'none' }}>
+                          <Tile cat={c} size={52} />
+                          {on && (
+                            <span className='absolute -right-1 -top-1 grid h-[18px] w-[18px] place-items-center rounded-full border-2 border-canvas bg-deep'>
+                              <span className='-mt-px block h-[3.5px] w-[7px] -rotate-45 border-b-2 border-l-2 border-[#7fd9e6]' />
+                            </span>
+                          )}
+                        </span>
+                        <span className='w-full truncate text-center text-[9.5px] font-semibold leading-tight' style={{ color: on ? '#16242a' : '#8b969b' }}>{c.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className={LABEL + ' mb-2 mt-3'}>{t('dateLabel')}</div>
+                <div className='flex gap-2'>
+                  {[0, 1].map((off) => {
+                    const dd = new Date(); dd.setDate(dd.getDate() - off);
+                    const v = iso(dd);
+                    return <button key={off} onClick={() => { tap('light'); setDraft((x) => ({ ...x, date: v })); }} className={'flex h-10 items-center rounded-xl border border-black/[0.07] px-3.5 text-[12.5px] font-semibold ' + chip(draft.date === v)}>{off === 0 ? t('today') : t('yesterday')}</button>;
+                  })}
+                  <input type='date' value={draft.date} max={iso(new Date())} onChange={(e) => { if (e.target.value) setDraft((d) => ({ ...d, date: e.target.value })); }} className='h-10 flex-1 rounded-xl border border-black/[0.07] bg-white px-2.5 font-mono text-[12.5px] text-ink outline-none' />
+                </div>
+
+                <div className={LABEL + ' mb-2 mt-3'}>{t('splitLabel')}</div>
+                <div className='flex gap-2'>
+                  {([['mine', t('justMe')], ['half', t('split5050')], ['custom', t('customPct')]] as const).map(([k, label]) => {
+                    const on = k === 'mine' ? draft.scope === 'mine' : k === 'half' ? draft.scope === 'split' && draft.pct === 50 : draft.scope === 'split' && draft.pct !== 50;
+                    return <button key={k} onClick={() => { tap('light'); setDraft((d) => (k === 'mine' ? { ...d, scope: 'mine' } : { ...d, scope: 'split', pct: k === 'half' ? 50 : d.pct === 50 ? 60 : d.pct })); }} className={'h-10 flex-1 rounded-xl border border-black/[0.07] text-[12.5px] font-semibold ' + chip(on)}>{label}</button>;
+                  })}
+                </div>
+                {draft.scope === 'split' && (
+                  <div className='mt-2 flex items-center gap-3 rounded-2xl border border-black/[0.06] bg-white p-3'>
+                    <button onClick={() => { tap('light'); setDraft((d) => ({ ...d, pct: Math.max(0, d.pct - 5) })); }} aria-label='−5%' className='grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-canvas'>
+                      <div className='h-[2.5px] w-2.5 rounded-sm bg-ink' />
+                    </button>
+                    <div className='flex-1 text-center'>
+                      <div className='font-mono text-[13px] text-ink'>{t('you')} {draft.pct}% · {t('partner')} {100 - draft.pct}%</div>
+                      <div className='mt-1.5 text-[10.5px] text-[#8b969b]'>{$(draftShare)} {t('countsAgainst')}</div>
+                    </div>
+                    <button onClick={() => { tap('light'); setDraft((d) => ({ ...d, pct: Math.min(100, d.pct + 5) })); }} aria-label='+5%' className='relative grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-canvas'>
+                      <div className='absolute h-[2.5px] w-2.5 rounded-sm bg-ink' />
+                      <div className='absolute h-2.5 w-[2.5px] rounded-sm bg-ink' />
+                    </button>
                   </div>
-                  <button onClick={() => setDraft((d) => ({ ...d, pct: Math.min(100, d.pct + 5) }))} className='relative grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-canvas'>
-                    <div className='absolute h-[2.5px] w-2.5 rounded-sm bg-ink' />
-                    <div className='absolute h-2.5 w-[2.5px] rounded-sm bg-ink' />
-                  </button>
-                </div>
-              )}
-              <input value={draft.note} onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} placeholder={t('note')} className='mb-3.5 h-10 w-full rounded-xl bg-white px-3.5 text-[13.5px] text-ink outline-none' />
-              </div>
-              <div className='shrink-0 border-t border-black/[0.06] px-[18px] pb-[22px] pt-3'>
-              <div className='grid grid-cols-3 gap-2'>
-                {['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 'del'].map((k) => (
-                  <button key={k} onClick={() => { tap(k === 'del' ? 'back' : 'key'); pressKey(k); }} className='tap-key grid h-[50px] select-none place-items-center rounded-[15px] bg-white font-mono text-[21px] text-ink shadow-[0_1px_2px_rgba(22,36,42,.06)] active:bg-[#e9eef0]'>{k === 'del' ? '⌫' : k}</button>
-                ))}
-              </div>
-              <button onClick={saveTx} disabled={amountValue <= 0} className='mt-3 flex h-[54px] w-full items-center justify-center gap-2.5 rounded-[18px] text-[15px] font-bold text-white transition-colors' style={{ background: amountValue > 0 ? '#12303a' : 'rgba(22,36,42,.22)' }}>
-                {amountValue > 0 && (
-                  <span className='grid h-[22px] w-[22px] place-items-center rounded-full bg-[#7fd9e6]'>
-                    <span className='-mt-0.5 block h-1 w-2 -rotate-45 border-b-2 border-l-2 border-deep' />
-                  </span>
                 )}
-                {amountValue > 0 ? t('confirmExpense') + ' · ' + $(Math.round(amountValue * 100)) : t('enterAmount')}
-              </button>
+
+                <div className={LABEL + ' mb-2 mt-3'}>{t('noteLabel')}</div>
+                <input value={draft.note} onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} placeholder={draftCat ? draftCat.name : t('note')} className='mb-1 h-11 w-full rounded-xl border border-black/[0.07] bg-white px-3.5 text-[13.5px] text-ink outline-none' />
+              </div>
+
+              <div className='shrink-0 border-t border-black/[0.06] bg-canvas px-[18px] pt-3' style={{ paddingBottom: 'calc(18px + env(safe-area-inset-bottom))' }}>
+                <div className='grid grid-cols-3 gap-1.5'>
+                  {['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 'del'].map((k) => (
+                    <button key={k} onClick={() => { tap(k === 'del' ? 'back' : 'key'); pressKey(k); }} aria-label={k === 'del' ? 'Delete' : k} className='tap-key grid h-[46px] select-none place-items-center rounded-[15px] bg-white font-mono text-[21px] text-ink shadow-[0_1px_2px_rgba(22,36,42,.06)] active:bg-[#e9eef0]'>{k === 'del' ? '⌫' : k}</button>
+                  ))}
+                </div>
+                <button onClick={saveTx} disabled={amountValue <= 0} className='mt-2.5 flex h-[54px] w-full items-center justify-center gap-2.5 rounded-[18px] text-[15px] font-bold text-white transition-colors' style={{ background: amountValue > 0 ? '#12303a' : 'rgba(22,36,42,.22)' }}>
+                  {amountValue > 0 && (
+                    <span className='grid h-[22px] w-[22px] place-items-center rounded-full bg-[#7fd9e6]'>
+                      <span className='-mt-0.5 block h-1 w-2 -rotate-45 border-b-2 border-l-2 border-deep' />
+                    </span>
+                  )}
+                  {amountValue > 0 ? t('confirmExpense') + ' · ' + $(draftCents) : t('enterAmount')}
+                </button>
               </div>
             </div>
           </>
@@ -605,8 +680,8 @@ export default function App() {
           const c = byId[x.cat];
           return (
             <>
-              <div className='anim-fade absolute inset-0 bg-[rgba(11,20,24,.42)]' onClick={closeSheet} />
-              <div className='anim-sheet absolute inset-x-0 bottom-0 rounded-t-[30px] bg-canvas px-[18px] pb-6 pt-2.5'>
+              <div className={SCRIM} onClick={closeSheet} />
+              <div role='dialog' aria-modal='true' className={SHEET + ' px-[18px] pt-2.5'} style={{ paddingBottom: 'calc(24px + env(safe-area-inset-bottom))' }}>
                 <div className='mx-auto mb-[18px] mt-0.5 h-1 w-[38px] rounded-full bg-black/15' />
                 <div className='mb-5 flex items-center gap-3.5'>
                   {c && <Tile cat={c} size={46} />}
@@ -616,9 +691,22 @@ export default function App() {
                   </div>
                   <div className='font-mono text-2xl tracking-[-0.02em] text-ink'>{$(x.amount)}</div>
                 </div>
+                {armDelete && <div className='mb-2.5 text-center text-[12px] font-semibold text-[#d8365b]'>{t('tapAgainToDelete')}</div>}
                 <div className='flex gap-2.5'>
-                  <button onClick={closeSheet} className='h-[50px] flex-1 rounded-[17px] bg-white text-sm font-semibold text-ink'>{t('close')}</button>
-                  <button onClick={() => { tap('back'); update((d) => { d.tx = d.tx.filter((r) => r.id !== x.id); }); setSheet(null); setToast(t('deleted')); }} className='h-[50px] flex-1 rounded-[17px] bg-[#ec6a86] text-sm font-semibold text-white'>{t('deleteTx')}</button>
+                  <button onClick={armDelete ? () => { tap('light'); setArmDelete(false); } : closeSheet} className='h-[50px] flex-1 rounded-[17px] border border-black/[0.06] bg-white text-sm font-semibold text-ink'>{armDelete ? t('cancel') : t('close')}</button>
+                  <button
+                    onClick={() => {
+                      if (!armDelete) { tap('light'); setArmDelete(true); return; }
+                      tap('back');
+                      update((d) => { d.tx = d.tx.filter((r) => r.id !== x.id); });
+                      setSheet(null);
+                      setToast(t('deleted'));
+                    }}
+                    className='h-[50px] flex-1 rounded-[17px] text-sm font-semibold text-white transition-colors'
+                    style={{ background: armDelete ? '#d8365b' : '#ec6a86' }}
+                  >
+                    {t('deleteTx')}
+                  </button>
                 </div>
               </div>
             </>
@@ -627,10 +715,13 @@ export default function App() {
 
         {sheet === 'cat' && (
           <>
-            <div className='anim-fade absolute inset-0 bg-[rgba(11,20,24,.42)]' onClick={closeSheet} />
-            <div className='anim-sheet absolute inset-x-0 bottom-0 rounded-t-[30px] bg-canvas px-[18px] pb-6 pt-2.5'>
+            <div className={SCRIM} onClick={closeSheet} />
+            <div role='dialog' aria-modal='true' className={SHEET + ' max-h-full overflow-y-auto px-[18px] pt-2.5'} style={{ paddingBottom: 'calc(24px + env(safe-area-inset-bottom))' }}>
               <div className='mx-auto mb-3.5 mt-0.5 h-1 w-[38px] rounded-full bg-black/15' />
-              <div className='mb-4 text-[17px] font-bold text-ink'>{form.id ? t('editCategory') : t('newCategory')}</div>
+              <div className='mb-4 flex items-center justify-between'>
+                <div className='text-[17px] font-bold text-ink'>{form.id ? t('editCategory') : t('newCategory')}</div>
+                <button onClick={closeSheet} aria-label={t('close')} className='grid h-[30px] w-[30px] place-items-center rounded-full bg-black/[0.06] text-[#5b6a70]'>✕</button>
+              </div>
               <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={t('name')} className='mb-2.5 h-[46px] w-full rounded-2xl bg-white px-3.5 text-[14.5px] font-medium text-ink outline-none' />
               <div className='mb-3 flex gap-2.5'>
                 <div className='flex h-[46px] flex-1 items-center gap-1 rounded-2xl bg-white px-3.5'>
@@ -646,7 +737,7 @@ export default function App() {
                   <button key={i} onClick={() => { tap('light'); setForm({ ...form, ci: i }); }} className='h-10 flex-1 rounded-[13px]' style={{ background: 'linear-gradient(155deg,' + p.cl + ',' + p.c + ' 60%,' + p.cd + ')', boxShadow: form.ci === i ? '0 0 0 3px #12303a' : 'inset 0 1px 0 rgba(255,255,255,.5)' }} />
                 ))}
               </div>
-              <button onClick={saveCat} className='h-[54px] w-full rounded-[18px] text-[15px] font-bold text-white' style={{ background: form.name.trim() ? '#12303a' : 'rgba(22,36,42,.22)' }}>
+              <button onClick={saveCat} disabled={!form.name.trim()} className='h-[54px] w-full rounded-[18px] text-[15px] font-bold text-white transition-colors' style={{ background: form.name.trim() ? '#12303a' : 'rgba(22,36,42,.22)' }}>
                 {form.id ? t('saveChanges') : t('create')}
               </button>
               {form.id && (
