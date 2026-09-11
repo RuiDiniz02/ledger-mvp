@@ -57,6 +57,8 @@ Then open it, let the worker register, and use your browser's offline mode or st
 - **A category's kind is about whether the app warns you, not about the amount being identical.** Fuel and haircuts belong in `fixed` even though the amount moves: you had to spend it, so a warning at 80% would be noise.
 - **Leftovers carry, but only when you say where to.** A finished month's unspent variable budget, plus anything a full pot released, builds up in a pool (`poolAt()`). The Overview shows a card when there is something in it; tapping it opens a sheet that hands the money to categories. Nothing expires, so skipping a month costs nothing, and the pool doubles as the "decide later" bucket.
 
+  Money reaches the pool three ways: a finished month's leftover, a full pot's released contribution, and `added` — savings that existed before any of this was tracked, entered from the Budget screen. All three go through the same hand-out, so there is one flow rather than three.
+
   Money can only be given to a real category. There is deliberately no "add it to the month in general": that would lift the ceiling without landing in any budget, so it could never be spent or carried and would quietly evaporate.
 
   An allocation is stored as an `Extra` on the month rather than folded into `ceiling` and `targets`, so the plan stays readable and Budget can show what was added and where it came from. This is what keeps the ceiling meaning "the most I want to spend" instead of drifting into a current-account balance.

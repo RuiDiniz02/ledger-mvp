@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MARKS, STARTERS, catHistory, catState, makeCategory, monthFreed, monthSaved, monthSpent, monthUsed,
-  ceilingIn, distributed, leftoverOf, makeExtra, monthsToGoal, monthsUpTo, poolAt, poolSources, potAt, targetIn, potBalance, searchTx, shiftYm, splitsOn, unsettled, used, ymOf,
+  addedIn, ceilingIn, distributed, leftoverOf, makeExtra, monthsToGoal, monthsUpTo, poolAt, poolSources, potAt, targetIn, potBalance, searchTx, shiftYm, splitsOn, unsettled, used, ymOf,
 } from '../data.ts';
 import { money } from '../format.ts';
 import type { Kind, Ledger, Tx } from '../types.ts';
@@ -569,13 +569,13 @@ test('distribution: money put into a pot really goes in the pot', () => {
   assert.equal(potAt(after, pot('p'), '2026-09').balance, 70000);
 });
 
-test('poolSources: names the two places the money came from', () => {
+test('poolSources: names where the money came from', () => {
   const l = ledger({
     cats: [cat('food', 'variable'), pot('p', 20000)],
     months: everyMonth(['2026-07', '2026-08', '2026-09'], { food: 40000, p: 10000 }),
     tx: [tx({ id: 'a', cat: 'food', amount: 25000, date: '2026-08-04' })],
   });
-  assert.deepEqual(poolSources(l, '2026-09'), { carried: 15000, freed: 10000 });
+  assert.deepEqual(poolSources(l, '2026-09'), { carried: 15000, freed: 10000, added: 0 });
 });
 
 test('pool: a ledger with no history has nothing to hand out', () => {
@@ -589,4 +589,41 @@ test('pool: the month you are in has not left anything over yet', () => {
     months: everyMonth(['2026-09'], { food: 40000 }),
   });
   assert.equal(poolAt(l, '2026-09'), 0, 'September is still running; its slack is not spare money');
+});
+
+test('outside money: lands in the pool, not in a budget', () => {
+  const base = ledger({ cats: [cat('food', 'variable')], months: everyMonth(['2026-09'], { food: 40000 }) });
+  const l = { ...base, months: { ...base.months, '2026-09': { ...base.months['2026-09'], added: 300000 } } };
+  assert.equal(poolAt(l, '2026-09'), 300000);
+  assert.equal(ceilingIn(l, '2026-09'), 200000, 'the ceiling does not move until it is handed out');
+  assert.equal(targetIn(l, '2026-09', 'food'), 40000);
+});
+
+test('outside money: handing it to a pot puts it in the pot', () => {
+  const base = ledger({ cats: [pot('p')], months: everyMonth(['2026-09'], { p: 10000 }) });
+  const l = { ...base, months: { ...base.months, '2026-09': { ...base.months['2026-09'], added: 200000 } } };
+  assert.equal(potAt(l, pot('p'), '2026-09').balance, 10000, 'nothing lands until it is placed');
+  const after = withExtra(l, '2026-09', 'p', 200000);
+  assert.equal(potAt(after, pot('p'), '2026-09').balance, 210000);
+  assert.equal(poolAt(after, '2026-09'), 0);
+});
+
+test('outside money: does not inflate what you can spend until it is placed', () => {
+  const base = ledger({ cats: [cat('food', 'variable')], months: everyMonth(['2026-09'], { food: 40000 }) });
+  const l = { ...base, months: { ...base.months, '2026-09': { ...base.months['2026-09'], added: 50000 } } };
+  assert.equal(ceilingIn(l, '2026-09') - monthSpent(l, '2026-09') - monthSaved(l, '2026-09'), 200000);
+  const after = withExtra(l, '2026-09', 'food', 50000);
+  assert.equal(ceilingIn(after, '2026-09') - monthSpent(after, '2026-09') - monthSaved(after, '2026-09'), 250000);
+});
+
+test('outside money: a negative or missing figure is ignored', () => {
+  const base = ledger({ months: everyMonth(['2026-09'], {}) });
+  assert.equal(addedIn(base, '2026-09'), 0);
+  assert.equal(addedIn({ ...base, months: { '2026-09': { ...base.months['2026-09'], added: -500 } } }, '2026-09'), 0);
+});
+
+test('poolSources: names outside money alongside the other two', () => {
+  const base = ledger({ cats: [cat('food', 'variable')], months: everyMonth(['2026-09'], { food: 40000 }) });
+  const l = { ...base, months: { ...base.months, '2026-09': { ...base.months['2026-09'], added: 300000 } } };
+  assert.deepEqual(poolSources(l, '2026-09'), { carried: 0, freed: 0, added: 300000 });
 });

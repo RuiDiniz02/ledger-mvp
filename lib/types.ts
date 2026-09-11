@@ -70,6 +70,12 @@ export interface MonthBudget {
   ceiling: number;
   targets: Record<string, number>;
   extra?: Extra[];
+  /**
+   * Money brought in from outside the app — savings that already existed before
+   * any of this was tracked. It lands in the pool rather than in a budget, so
+   * it goes through the same hand-out as anything else.
+   */
+  added?: number;
 }
 
 /** Bump on every shape change and add a step to MIGRATIONS in lib/store.ts. */

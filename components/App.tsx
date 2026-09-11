@@ -26,7 +26,7 @@ const SHEET = 'anim-sheet absolute inset-x-0 bottom-0 z-50 rounded-t-[30px] bg-c
 type Screen = 'home' | 'activity' | 'budget' | 'me' | 'detail';
 type Draft = { id: string | null; amount: string; cat: string; date: string; note: string; scope: 'mine' | 'split'; pct: number };
 type CatForm = { id: string | null; name: string; kind: Kind; ci: number; target: string; mark: MarkKind; goal: string };
-type Sheet = null | 'log' | 'tx' | 'cat' | 'import' | 'pool';
+type Sheet = null | 'log' | 'tx' | 'cat' | 'import' | 'pool' | 'add';
 /** What to do with the expenses of a category being deleted. */
 type CatDelete = { count: number; mode: 'uncat' | 'move' | 'purge'; dest: string };
 
@@ -55,6 +55,7 @@ export default function App() {
   const [installer, setInstaller] = useState<{ prompt: () => Promise<void> } | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const [give, setGive] = useState<Record<string, number>>({});
+  const [bring, setBring] = useState('');
 
   useEffect(() => { setFb(feedbackOn()); }, []);
 
@@ -67,7 +68,7 @@ export default function App() {
   useEffect(() => { setCeilDraft(null); }, [ym]);
   // poolAt walks every month on record, so it must not run on every keystroke.
   const pool = useMemo(() => (data && data.onboarded ? poolAt(data, ym) : 0), [data, ym]);
-  const sources = useMemo(() => (data && data.onboarded ? poolSources(data, ym) : { carried: 0, freed: 0 }), [data, ym]);
+  const sources = useMemo(() => (data && data.onboarded ? poolSources(data, ym) : { carried: 0, freed: 0, added: 0 }), [data, ym]);
   useEffect(() => { setArmDelete(false); setCatDel(null); }, [sheet, viewTx]);
 
   // Chrome and Android offer a real install prompt; iOS has none, so Account
@@ -379,6 +380,19 @@ export default function App() {
       return { ...g, [key]: (g[key] || 0) + rest };
     });
 
+  const saveBring = () => {
+    const cents = toCents(bring);
+    if (cents <= 0) return;
+    update((d) => {
+      const b = ensureMonth(d, ym);
+      b.added = (b.added || 0) + cents;
+    });
+    tap('confirm');
+    setBring('');
+    setSheet(null);
+    setToast(t('addMoneyDone', { amount: $(cents) }));
+  };
+
   const saveGive = () => {
     const entries = Object.entries(give).filter(([, n]) => n > 0);
     if (!entries.length) return;
@@ -579,11 +593,11 @@ export default function App() {
                   <div className='min-w-0 flex-1'>
                     <div className='text-[13.5px] font-semibold text-ink'>{t('poolTitle', { amount: $(pool) })}</div>
                     <div className='mt-0.5 truncate text-xs text-[#8b969b]'>
-                      {sources.carried > 0 && sources.freed > 0
-                        ? t('poolBoth', { carry: $(sources.carried, false), month: ymLabel(shiftYm(ym, -1), lang), freed: $(sources.freed, false) })
-                        : sources.freed > 0
-                        ? t('poolFromFreed', { amount: $(sources.freed, false) })
-                        : t('poolFromCarry', { amount: $(sources.carried, false), month: ymLabel(shiftYm(ym, -1), lang) })}
+                      {[
+                        sources.carried > 0 && t('poolFromCarry', { amount: $(sources.carried, false), month: ymLabel(shiftYm(ym, -1), lang) }),
+                        sources.freed > 0 && t('poolFromFreed', { amount: $(sources.freed, false) }),
+                        sources.added > 0 && t('poolFromAdded', { amount: $(sources.added, false) }),
+                      ].filter(Boolean).join(' · ')}
                     </div>
                   </div>
                   <div className='text-xs font-semibold text-[#0b7b8f]'>{t('distribute')}</div>
@@ -758,6 +772,17 @@ export default function App() {
                   </>
                 )}
               </div>
+
+              <button onClick={() => { tap('light'); setBring(''); setSheet('add'); }} className='mt-2.5 flex w-full items-center gap-3 rounded-[18px] border border-black/[0.07] bg-white px-4 py-3.5 text-left'>
+                <div className='relative grid h-[30px] w-[30px] shrink-0 place-items-center rounded-[10px] bg-canvas'>
+                  <div className='absolute h-[2px] w-3.5 rounded-sm bg-[#5b6a70]' />
+                  <div className='absolute h-3.5 w-[2px] rounded-sm bg-[#5b6a70]' />
+                </div>
+                <div className='min-w-0 flex-1'>
+                  <div className='text-[13px] font-semibold text-ink'>{t('addMoney')}</div>
+                  <div className='mt-0.5 text-[11.5px] leading-snug text-[#8b969b]'>{t('addMoneyBody')}</div>
+                </div>
+              </button>
 
               <div className='mb-3 mt-6 text-[13px] font-bold text-ink'>{t('categoryTargets')}</div>
               <div className='flex flex-col gap-[9px]'>
@@ -1271,6 +1296,35 @@ export default function App() {
                   </div>
                 </div>
               )}
+            </div>
+          </>
+        )}
+
+        {sheet === 'add' && (
+          <>
+            <div className={SCRIM} onClick={closeSheet} />
+            <div role='dialog' aria-modal='true' className={SHEET + ' px-[18px] pt-2.5'} style={{ paddingBottom: 'calc(24px + env(safe-area-inset-bottom))' }}>
+              <div className='mx-auto mb-3.5 mt-0.5 h-1 w-[38px] rounded-full bg-black/15' />
+              <div className='text-[17px] font-bold text-ink'>{t('addMoney')}</div>
+              <div className='mt-1.5 text-[12.5px] leading-relaxed text-[#8b969b]'>{t('addMoneyBody')}</div>
+              <div className='my-4 flex items-center gap-2 rounded-2xl bg-white px-4 py-3'>
+                <span className='font-mono text-[24px] text-[#8b969b]'>€</span>
+                <input
+                  value={bring}
+                  onChange={(e) => setBring(e.target.value.replace(/[^0-9.,]/g, ''))}
+                  inputMode='decimal'
+                  placeholder='0'
+                  autoFocus
+                  aria-label={t('addMoneyAmount')}
+                  className='w-full bg-transparent font-mono text-[28px] tracking-[-0.03em] text-ink outline-none'
+                />
+              </div>
+              <div className='flex gap-2.5'>
+                <button onClick={closeSheet} className='h-[50px] flex-1 rounded-[17px] border border-black/[0.06] bg-white text-sm font-semibold text-ink'>{t('cancel')}</button>
+                <button onClick={saveBring} disabled={toCents(bring) <= 0} className='h-[50px] flex-1 rounded-[17px] text-sm font-semibold text-white transition-colors' style={{ background: toCents(bring) > 0 ? '#12303a' : 'rgba(22,36,42,.22)' }}>
+                  {t('distribute')}
+                </button>
+              </div>
             </div>
           </>
         )}

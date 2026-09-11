@@ -267,6 +267,12 @@ export function extraFor(l: Ledger, ym: string, to: string | null): number {
   return b.extra.filter((e) => e.to === to).reduce((a, e) => a + e.amount, 0);
 }
 
+/** Money brought in from outside in a month, before it is handed out. */
+export function addedIn(l: Ledger, ym: string): number {
+  const b = l.months[ym];
+  return b && typeof b.added === 'number' ? Math.max(0, b.added) : 0;
+}
+
 /** Everything handed out in a month, wherever it went. */
 export function distributed(l: Ledger, ym: string): number {
   const b = l.months[ym];
@@ -308,6 +314,7 @@ export function poolAt(l: Ledger, ym: string): number {
   for (const k of monthsUpTo(l, ym)) {
     pool += leftoverOf(l, shiftYm(k, -1));
     pool += monthFreed(l, k);
+    pool += addedIn(l, k);
     pool -= distributed(l, k);
   }
   return Math.max(0, pool);
@@ -315,7 +322,7 @@ export function poolAt(l: Ledger, ym: string): number {
 
 /** Where this month's pool came from, for the line under the prompt. */
 export function poolSources(l: Ledger, ym: string) {
-  return { carried: leftoverOf(l, shiftYm(ym, -1)), freed: monthFreed(l, ym) };
+  return { carried: leftoverOf(l, shiftYm(ym, -1)), freed: monthFreed(l, ym), added: addedIn(l, ym) };
 }
 
 export function makeExtra(from: ExtraSource, to: string | null, amount: number): Extra {
