@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  MARKS, STARTERS, catHistory, catState, makeCategory, monthSaved, monthSpent, monthUsed, monthsUpTo, potBalance, searchTx, shiftYm, splitsOn, unsettled, used, ymOf,
+  MARKS, STARTERS, catHistory, catState, makeCategory, monthFreed, monthSaved, monthSpent, monthUsed,
+  monthsToGoal, monthsUpTo, potAt, potBalance, searchTx, shiftYm, splitsOn, unsettled, used, ymOf,
 } from '../data.ts';
 import { money } from '../format.ts';
 import type { Kind, Ledger, Tx } from '../types.ts';
@@ -113,8 +114,8 @@ test('potBalance: contributions accumulate across months', () => {
       '2026-09': { ceiling: 200000, targets: { emerg: 10000 } },
     },
   });
-  assert.equal(potBalance(l, 'emerg', '2026-09'), 30000);
-  assert.equal(potBalance(l, 'emerg', '2026-08'), 20000);
+  assert.equal(potBalance(l, cat('emerg', 'saving'), '2026-09'), 30000);
+  assert.equal(potBalance(l, cat('emerg', 'saving'), '2026-08'), 20000);
 });
 
 test('potBalance: months never opened still contribute, seeded from the last one set', () => {
@@ -123,7 +124,7 @@ test('potBalance: months never opened still contribute, seeded from the last one
     months: { '2026-07': { ceiling: 200000, targets: { emerg: 10000 } } },
   });
   // July, August and September, even though only July was ever written.
-  assert.equal(potBalance(l, 'emerg', '2026-09'), 30000);
+  assert.equal(potBalance(l, cat('emerg', 'saving'), '2026-09'), 30000);
 });
 
 test('potBalance: taking money out lowers the balance', () => {
@@ -135,7 +136,7 @@ test('potBalance: taking money out lowers the balance', () => {
     },
     tx: [tx({ id: 'a', cat: 'trip', amount: 12000, date: '2026-08-20' })],
   });
-  assert.equal(potBalance(l, 'trip', '2026-08'), 8000);
+  assert.equal(potBalance(l, cat('trip', 'saving'), '2026-08'), 8000);
 });
 
 test('potBalance: a withdrawal in a later month does not affect an earlier balance', () => {
@@ -147,7 +148,7 @@ test('potBalance: a withdrawal in a later month does not affect an earlier balan
     },
     tx: [tx({ id: 'a', cat: 'trip', amount: 5000, date: '2026-08-20' })],
   });
-  assert.equal(potBalance(l, 'trip', '2026-07'), 10000);
+  assert.equal(potBalance(l, cat('trip', 'saving'), '2026-07'), 10000);
 });
 
 test('potBalance: a pot created later is not credited for earlier months', () => {
@@ -158,7 +159,7 @@ test('potBalance: a pot created later is not credited for earlier months', () =>
       '2026-09': { ceiling: 0, targets: { trip: 10000 } },
     },
   });
-  assert.equal(potBalance(l, 'trip', '2026-09'), 10000);
+  assert.equal(potBalance(l, cat('trip', 'saving'), '2026-09'), 10000);
 });
 
 test('monthsUpTo: is inclusive and ordered, and capped against runaway data', () => {
@@ -281,17 +282,17 @@ test('the pot cycle: save for four months, take it all out, start again', () => 
   const base = ledger({ cats: [cat('trip', 'saving'), cat('food', 'variable')], months });
 
   // Four months of putting 200 aside.
-  assert.equal(potBalance(base, 'trip', '2026-09'), 80000);
+  assert.equal(potBalance(base, cat('trip', 'saving'), '2026-09'), 80000);
 
   const after = { ...base, tx: [tx({ id: 'w', cat: 'trip', amount: 80000, date: '2026-09-10' })] };
-  assert.equal(potBalance(after, 'trip', '2026-09'), 0, 'the pot is emptied');
+  assert.equal(potBalance(after, cat('trip', 'saving'), '2026-09'), 0, 'the pot is emptied');
 
   // The trip did not eat September: that money was charged to the months that saved it.
   assert.equal(monthSpent(after, '2026-09'), 0);
   assert.equal(monthSaved(after, '2026-09'), 20000, 'September still put its own 200 aside');
 
   // October keeps contributing, so the pot starts building again.
-  assert.equal(potBalance(after, 'trip', '2026-10'), 20000);
+  assert.equal(potBalance(after, cat('trip', 'saving'), '2026-10'), 20000);
 });
 
 test('the pot cycle: an earlier month is unaffected by a later withdrawal', () => {
@@ -304,7 +305,7 @@ test('the pot cycle: an earlier month is unaffected by a later withdrawal', () =
     months,
     tx: [tx({ id: 'w', cat: 'trip', amount: 80000, date: '2026-09-10' })],
   });
-  assert.equal(potBalance(l, 'trip', '2026-08'), 60000, 'August still had three months saved');
+  assert.equal(potBalance(l, cat('trip', 'saving'), '2026-08'), 60000, 'August still had three months saved');
 });
 
 test('the pot cycle: taking out more than the pot holds goes negative rather than being hidden', () => {
@@ -313,7 +314,7 @@ test('the pot cycle: taking out more than the pot holds goes negative rather tha
     months: { '2026-09': { ceiling: 0, targets: { trip: 10000 } } },
     tx: [tx({ id: 'w', cat: 'trip', amount: 30000, date: '2026-09-10' })],
   });
-  assert.equal(potBalance(l, 'trip', '2026-09'), -20000);
+  assert.equal(potBalance(l, cat('trip', 'saving'), '2026-09'), -20000);
 });
 
 test('makeCategory: keeps the icon the user was shown', () => {
@@ -334,4 +335,101 @@ test('makeCategory: every starter survives onboarding with its own icon', () => 
   for (const [i, s] of STARTERS.entries()) {
     assert.equal(makeCategory(s.pt, s.kind, s.ci, i, s.mark).mark, s.mark, s.key);
   }
+});
+
+const pot = (id: string, goal?: number) => ({ ...cat(id, 'saving' as const), ...(goal ? { goal } : {}) });
+const everyMonth = (ks: string[], targets: Record<string, number>) =>
+  Object.fromEntries(ks.map((k) => [k, { ceiling: 200000, targets }]));
+
+test('goal: a pot with no goal keeps taking its contribution for ever', () => {
+  const l = ledger({ months: everyMonth(['2026-07', '2026-08', '2026-09'], { p: 10000 }) });
+  const s = potAt(l, pot('p'), '2026-09');
+  assert.equal(s.balance, 30000);
+  assert.equal(s.contribution, 10000);
+  assert.equal(s.full, false);
+  assert.equal(s.freed, 0);
+});
+
+test('goal: a pot stops contributing once it is full', () => {
+  // 100 a month against a 250 goal: 100, 100, then only 50, then nothing.
+  const l = ledger({ months: everyMonth(['2026-06', '2026-07', '2026-08', '2026-09'], { p: 10000 }) });
+  const p = pot('p', 25000);
+  assert.equal(potAt(l, p, '2026-07').balance, 20000);
+  assert.equal(potAt(l, p, '2026-08').balance, 25000, 'the last month tops up by only what was missing');
+  assert.equal(potAt(l, p, '2026-08').contribution, 5000);
+  const now = potAt(l, p, '2026-09');
+  assert.equal(now.balance, 25000, 'it does not overshoot the goal');
+  assert.equal(now.contribution, 0);
+  assert.equal(now.full, true);
+});
+
+test('goal: a full pot frees the money it would have taken', () => {
+  const l = ledger({
+    cats: [pot('p', 20000), cat('food', 'variable')],
+    months: everyMonth(['2026-07', '2026-08', '2026-09'], { p: 10000, food: 40000 }),
+  });
+  assert.equal(monthSaved(l, '2026-09'), 0, 'the pot is full, so nothing is put away');
+  assert.equal(monthFreed(l, '2026-09'), 10000, 'and its 100 is available for something else');
+  assert.equal(monthSaved(l, '2026-07'), 10000, 'but it was still saving while filling');
+  assert.equal(monthFreed(l, '2026-07'), 0);
+});
+
+test('goal: taking money out starts the pot filling again by itself', () => {
+  const months = everyMonth(['2026-07', '2026-08', '2026-09', '2026-10'], { p: 10000 });
+  const l = ledger({ months, tx: [tx({ id: 'w', cat: 'p', amount: 15000, date: '2026-09-10' })] });
+  const p = pot('p', 20000);
+  assert.equal(potAt(l, p, '2026-08').balance, 20000, 'full by August');
+  const sep = potAt(l, p, '2026-09');
+  assert.equal(sep.contribution, 0, 'still full at the start of September, so it took nothing');
+  assert.equal(sep.balance, 5000, 'then 150 came out');
+  const oct = potAt(l, p, '2026-10');
+  assert.equal(oct.contribution, 10000, 'October resumes on its own');
+  assert.equal(oct.balance, 15000);
+  assert.equal(oct.full, false);
+});
+
+test('goal: a goal is never exceeded by contributions', () => {
+  const l = ledger({ months: everyMonth(['2026-08', '2026-09'], { p: 50000 }) });
+  assert.equal(potAt(l, pot('p', 30000), '2026-09').balance, 30000);
+});
+
+test('goal: a zero or missing goal means no cap', () => {
+  const l = ledger({ months: everyMonth(['2026-08', '2026-09'], { p: 10000 }) });
+  assert.equal(potAt(l, { ...cat('p', 'saving'), goal: 0 }, '2026-09').balance, 20000);
+  assert.equal(potAt(l, cat('p', 'saving'), '2026-09').full, false);
+});
+
+test('monthsToGoal: counts the contributions still needed, rounding up', () => {
+  const l = ledger({ months: everyMonth(['2026-09'], { p: 20000 }) });
+  // 200 in, 1500 goal: 1300 to go at 200 a month is 7 more months.
+  assert.equal(monthsToGoal(potAt(l, pot('p', 150000), '2026-09')), 7);
+});
+
+test('monthsToGoal: is nothing to say when there is no goal, or it is met', () => {
+  const l = ledger({ months: everyMonth(['2026-09'], { p: 20000 }) });
+  assert.equal(monthsToGoal(potAt(l, cat('p', 'saving'), '2026-09')), null);
+  assert.equal(monthsToGoal(potAt(l, pot('p', 10000), '2026-09')), null, 'already met');
+});
+
+test('monthsToGoal: a pot that is not contributing has no arrival date', () => {
+  const l = ledger({ months: everyMonth(['2026-09'], { p: 0 }) });
+  assert.equal(monthsToGoal(potAt(l, pot('p', 100000), '2026-09')), null);
+});
+
+test('goal: the month a pot fills up, it still contributed', () => {
+  // 200 a month, 1000 goal: September is the fifth month and completes it.
+  const l = ledger({ months: everyMonth(['2026-05', '2026-06', '2026-07', '2026-08', '2026-09'], { p: 20000 }) });
+  const sep = potAt(l, pot('p', 100000), '2026-09');
+  assert.equal(sep.balance, 100000);
+  assert.equal(sep.full, true);
+  assert.equal(sep.contribution, 20000, 'it filled up this month, so it did put money in');
+  assert.equal(sep.freed, 0, 'nothing was freed yet');
+
+  const oct = potAt(
+    ledger({ months: everyMonth(['2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10'], { p: 20000 }) }),
+    pot('p', 100000),
+    '2026-10'
+  );
+  assert.equal(oct.contribution, 0, 'October is the first month it takes nothing');
+  assert.equal(oct.freed, 20000);
 });

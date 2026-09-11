@@ -144,17 +144,55 @@ export function monthsUpTo(l: Ledger, ym: string, cap = 600): string[] {
   return out;
 }
 
+export type PotState = {
+  /** What is in the pot at the end of `ym`. */
+  balance: number;
+  /** What it actually took this month, which a goal can cut to zero. */
+  contribution: number;
+  /** What the plan said it would take, before the goal capped it. */
+  planned: number;
+  /** Money the goal freed up this month. */
+  freed: number;
+  full: boolean;
+  goal: number | null;
+};
+
 /**
- * A pot's balance as of the end of `ym`: every monthly contribution since the
- * ledger began, minus everything taken back out of it. Months the user never
- * opened still count, because monthBudget seeds them from the last one set.
+ * Walks a pot month by month, because a goal makes each month depend on the
+ * one before it: once the balance reaches the goal the pot stops taking its
+ * contribution, and it starts again by itself if money is taken out.
+ *
+ * Within a month the pot is topped up first and spent from second, so a
+ * withdrawal never blocks that month's own contribution.
  */
-export function potBalance(l: Ledger, catId: string, ym: string): number {
-  const paidIn = monthsUpTo(l, ym).reduce((a, k) => a + (monthBudget(l, k).targets[catId] || 0), 0);
-  const takenOut = l.tx
-    .filter((t) => t.cat === catId && ymOf(t.date) <= ym)
-    .reduce((a, t) => a + t.amount, 0);
-  return paidIn - takenOut;
+export function potAt(l: Ledger, cat: Category, ym: string): PotState {
+  const goal = cat.goal && cat.goal > 0 ? cat.goal : null;
+
+  const out: Record<string, number> = {};
+  for (const t of l.tx) {
+    if (t.cat === cat.id) out[ymOf(t.date)] = (out[ymOf(t.date)] || 0) + t.amount;
+  }
+
+  let balance = 0;
+  let contribution = 0;
+  let planned = 0;
+  for (const k of monthsUpTo(l, ym)) {
+    const target = Math.max(0, monthBudget(l, k).targets[cat.id] || 0);
+    const room = goal === null ? target : Math.max(0, Math.min(target, goal - balance));
+    balance += room - (out[k] || 0);
+    if (k === ym) { contribution = room; planned = target; }
+  }
+
+  return { balance, contribution, planned, freed: Math.max(0, planned - contribution), full: goal !== null && balance >= goal, goal };
+}
+
+/** A pot's balance as of the end of `ym`. */
+export const potBalance = (l: Ledger, cat: Category, ym: string) => potAt(l, cat, ym).balance;
+
+/** How many more months of contributions before the goal is met. */
+export function monthsToGoal(p: PotState): number | null {
+  if (p.goal === null || p.balance >= p.goal || p.planned <= 0) return null;
+  return Math.ceil((p.goal - p.balance) / p.planned);
 }
 
 /** Money that actually left this month, on real expenses. Pots are not spending. */
@@ -167,10 +205,16 @@ export function monthSpent(l: Ledger, ym: string): number {
 
 /** Money put away this month, which is gone from what you can spend. */
 export function monthSaved(l: Ledger, ym: string): number {
-  const b = monthBudget(l, ym);
   return l.cats
     .filter((c) => c.kind === 'saving')
-    .reduce((a, c) => a + Math.max(0, b.targets[c.id] || 0), 0);
+    .reduce((a, c) => a + potAt(l, c, ym).contribution, 0);
+}
+
+/** Contributions a full pot released this month, ready to go somewhere else. */
+export function monthFreed(l: Ledger, ym: string): number {
+  return l.cats
+    .filter((c) => c.kind === 'saving')
+    .reduce((a, c) => a + potAt(l, c, ym).freed, 0);
 }
 
 /** Everything the month takes out of the ceiling: spent plus saved. */
@@ -194,7 +238,7 @@ export function catHistory(l: Ledger, c: Category, ym: string, n = 6) {
     const b = monthBudget(l, k);
     const value =
       c.kind === 'saving'
-        ? potBalance(l, c.id, k)
+        ? potBalance(l, c, k)
         : used(c.kind, b.targets[c.id] || 0, spentBy(l, k, c.id));
     out.push({ ym: k, value });
   }

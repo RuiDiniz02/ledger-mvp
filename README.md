@@ -52,6 +52,9 @@ Then open it, let the worker register, and use your browser's offline mode or st
   - `saving` is a pot, and the only kind whose money is treated as gone before it is spent, because putting 200 into a pot really does remove it from what you can spend this month. The target is that monthly contribution and it accumulates. Taking money out is an expense logged against the pot, which lowers the balance and costs the month nothing, since it was charged to the months that saved it. `potBalance()` answers "how much is in the emergency fund", which no monthly figure can.
 
   The rule in one line: **allocating is not spending.** A target says money is there to spend, not that it has gone. Only a pot contribution leaves.
+
+  A pot can carry an optional `goal`. Once its balance reaches it the pot stops taking its contribution, and `monthFreed()` reports the money that frees up. Taking money out starts it filling again on its own. Because each month then depends on the one before it, `potAt()` walks the months rather than summing them, topping the pot up first and spending from it second.
+- **A category's kind is about whether the app warns you, not about the amount being identical.** Fuel and haircuts belong in `fixed` even though the amount moves: you had to spend it, so a warning at 80% would be noise.
 - **Calendar month, no rollover** for variable and fixed. Pots are the deliberate exception: carrying over is the entire point of a pot.
 - **Per-expense splits, off by default.** Every transaction still stores `scope`, `pct` (your share) and `paidBy`, so adding a second member later is a join, not a migration. The controls stay hidden until someone turns them on in Account, because until there is a second person the settle-up balance is a number nobody can settle. `splitsOn()` shows them anyway for anyone whose ledger already has split rows.
 - **Money is integer minor units (cents)** everywhere. Never floats.

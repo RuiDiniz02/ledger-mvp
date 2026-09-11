@@ -20,6 +20,12 @@ export interface Category {
   c: string;
   cl: string;
   cd: string;
+  /**
+   * Optional, and only meaningful for a `saving` pot: the amount it is building
+   * towards. Once the balance reaches it the pot stops taking its monthly
+   * contribution, which frees that money up for something else.
+   */
+  goal?: number;
   archived?: boolean;
 }
 
