@@ -7,7 +7,7 @@ import { useLedger } from '@/lib/store';
 import { money, dayLabel } from '@/lib/format';
 import {
   MARKS, PALETTE, UNCAT_ID, allocated, catState, ensureMonth, iso, makeCategory, monthBudget, monthMeta,
-  catHistory, ceilingIn, distributed, makeExtra, monthFreed, monthSaved, monthSpent, monthsToGoal, orphanTx,
+  catHistory, ceilingIn, distributed, makeExtra, monthFreed, monthFromPots, monthSaved, monthSpent, monthsToGoal, orphanTx,
   poolAt, poolSources, potAt, searchTx, targetIn, shiftYm, spentBy, txOfMonth, uid, uncatFor,
   splitsOn, unsettled, used, ymLabel, ymNow, ymOf,
 } from '@/lib/data';
@@ -155,28 +155,37 @@ export default function App() {
     const balance = ps ? ps.balance : 0;
     const st = catState(c.kind, target, sp, WARN_AT);
     const pct = target > 0 ? Math.round((sp / target) * 100) : 0;
+    const goal = ps && ps.goal ? ps.goal : 0;
+    const over = !pot && target > 0 && sp > target;
+    const tone = over ? '#d8365b' : st === 'near' ? '#c8722a' : '#8b969b';
+
     const meta =
       virtual ? { color: '#8b969b', text: t('uncatBody'), bar: c.c }
       : pot ? (
           // Full *and* took nothing. The month it fills up, it did still contribute.
-          ps && ps.full && ps.contribution === 0 ? { color: '#0b7b8f', text: t('potFull'), bar: c.c }
-          : { color: sp > 0 ? '#c8722a' : '#8b969b', text: (sp > 0 ? '−' + $(sp) : '+' + $(ps ? ps.contribution : target)) + ' ' + t('thisMonthShort'), bar: c.c }
+          ps && ps.full && ps.contribution === 0
+            ? { color: '#0b7b8f', text: t('potFull'), bar: c.c }
+            : {
+                color: sp > 0 ? '#c8722a' : '#8b969b',
+                text:
+                  (sp > 0 ? '−' + $(sp) : '+' + $(ps ? ps.contribution : target)) + ' ' + t('thisMonthShort') +
+                  (goal > 0 ? ' · ' + t('goalOf', { amount: $(goal, false) }) : ''),
+                bar: c.c,
+              }
         )
-      // A fixed category is money you had to spend, so it is reported against the
-      // plan rather than praised as "funded" or scolded as "over budget".
-      : c.kind === 'fixed' ? (
-          sp > target
-            ? { color: '#d8365b', text: t('overPlanned', { amount: $(sp - target) }), bar: '#ec6a86' }
-            : { color: '#8b969b', text: t('ofPlanned', { n: pct }), bar: c.c }
-        )
-      : st === 'over' ? { color: '#d8365b', text: $(sp - target) + ' ' + t('overBy'), bar: '#ec6a86' }
-      : st === 'funded' ? { color: '#0b7b8f', text: t('funded'), bar: c.c }
-      : st === 'near' ? { color: '#c8722a', text: pct + '% ' + t('used') + ' — ' + t('tight'), bar: '#f4874b' }
-      : st === 'empty' ? { color: '#8b969b', text: t('noTarget'), bar: c.c }
-      : { color: '#8b969b', text: pct + '% ' + t('used'), bar: c.c };
-    const goal = ps && ps.goal ? ps.goal : 0;
+      : target > 0
+      // One phrasing for every spending category: what went, out of what was
+      // planned. The figure beside the name says what is still there.
+      ? { color: tone, text: t('spentOfTarget', { spent: $(sp), target: $(target, false) }), bar: over ? '#ec6a86' : st === 'near' ? '#f4874b' : c.c }
+      : { color: '#8b969b', text: t('noTarget'), bar: c.c };
+
+    // The number beside the name always means "what you still have", whatever
+    // the kind. It used to mean the balance on a pot and the spend on
+    // everything else, which read as the same thing and was not.
+    const headline = virtual ? sp : pot ? balance : target > 0 ? target - sp : sp;
+    const headlineWord = virtual || (!pot && target <= 0) ? t('spentWord') : pot ? t('balance') : t('leftWord');
     return {
-      ...c, virtual, pot, target, spent: sp, cost, balance, st, meta,
+      ...c, virtual, pot, target, spent: sp, cost, balance, st, meta, headline, headlineWord, over,
       goal, full: ps ? ps.full : false, freed: ps ? ps.freed : 0,
       toGoal: ps ? monthsToGoal(ps) : null,
       // A pot fills towards its goal; everything else fills towards the month's target.
@@ -191,6 +200,7 @@ export default function App() {
   // gone from what you can spend but is not spending. Allocation is neither.
   const spent = monthSpent(l, ym);
   const saved = monthSaved(l, ym);
+  const fromPots = monthFromPots(l, ym);
   const alloc = l.cats.reduce((a, c) => a + targetIn(l, ym, c.id), 0);
   const ceiling = ceilingIn(l, ym);
   const remaining = ceiling - spent - saved;
@@ -570,6 +580,14 @@ export default function App() {
                       </div>
                     ))}
                   </div>
+                  {/* Money out of a pot really was spent, but it was charged to the
+                      months that saved it, so it sits outside the figures above. */}
+                  {fromPots > 0 && (
+                    <div className='mt-3.5 flex items-center justify-between border-t border-white/10 pt-3.5'>
+                      <div className='text-[12.5px] text-white/60'>{t('fromSavings')}</div>
+                      <div className='font-mono text-[15px] text-white/90'>{$(fromPots)}</div>
+                    </div>
+                  )}
                   {m.isCurrent && (
                     <div className='mt-3.5 flex items-center justify-between border-t border-white/10 pt-3.5'>
                       <div className='text-[12.5px] text-white/60'>{t('safeDaily')}</div>
@@ -631,34 +649,19 @@ export default function App() {
                       <div className='min-w-0 flex-1'>
                         <div className='flex items-baseline justify-between gap-2.5'>
                           <div className='truncate text-sm font-semibold text-ink'>{c.name}</div>
-                          <div className='shrink-0 font-mono text-[12.5px] text-ink'>{$(c.pot ? c.balance : c.cost)}</div>
+                          <div className='shrink-0 font-mono text-[12.5px]' style={{ color: c.over ? '#d8365b' : '#16242a' }}>{$(c.headline)}</div>
                         </div>
-                        {/* A pot has no monthly ceiling to fill, so a progress bar would be a lie. */}
-                        {c.pot ? (
-                          <>
-                            {c.goal > 0 && (
-                              <div className='my-2 h-1.5 overflow-hidden rounded-full bg-[#eceff0]'>
-                                <div className='h-full rounded-full bar-fill' style={{ width: c.w + '%', background: c.full ? '#0b7b8f' : c.meta.bar }} />
-                              </div>
-                            )}
-                            <div className={(c.goal > 0 ? '' : 'mt-1.5 ') + 'flex items-center justify-between gap-2.5'}>
-                              <div className='text-[11.5px]' style={{ color: c.meta.color }}>{c.meta.text}</div>
-                              <div className='font-mono text-[11.5px] text-[#8b969b]'>
-                                {c.goal > 0 ? t('goalOf', { amount: $(c.goal, false) }) : t('balance')}
-                              </div>
-                            </div>
-                          </>
-                        ) : (
-                          <>
-                            <div className='my-2 h-1.5 overflow-hidden rounded-full bg-[#eceff0]'>
-                              <div className='h-full rounded-full bar-fill' style={{ width: c.w + '%', background: c.meta.bar }} />
-                            </div>
-                            <div className='flex items-center justify-between gap-2.5'>
-                              <div className='text-[11.5px]' style={{ color: c.meta.color }}>{c.meta.text}</div>
-                              <div className='font-mono text-[11.5px] text-[#8b969b]'>{c.target > 0 ? t('of') + ' ' + $(c.target, false) : ''}</div>
-                            </div>
-                          </>
+                        {/* A pot only gets a bar once it has a goal to fill. */}
+                        {(!c.pot || c.goal > 0) && (
+                          <div className='my-2 h-1.5 overflow-hidden rounded-full bg-[#eceff0]'>
+                            <div className='h-full rounded-full bar-fill' style={{ width: c.w + '%', background: c.full ? '#0b7b8f' : c.meta.bar }} />
+                          </div>
                         )}
+                        <div className={(c.pot && c.goal <= 0 ? 'mt-1.5 ' : '') + 'flex items-center justify-between gap-2.5'}>
+                          <div className='min-w-0 flex-1 truncate text-[11.5px]' style={{ color: c.meta.color }}>{c.meta.text}</div>
+                          {/* Names the figure beside the category, so it never has to be guessed. */}
+                          <div className='shrink-0 text-[11.5px] text-[#b3bcbf]'>{c.headlineWord}</div>
+                        </div>
                       </div>
                     </button>
                   ))}

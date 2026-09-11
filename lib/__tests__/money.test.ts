@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  MARKS, STARTERS, catHistory, catState, makeCategory, monthFreed, monthSaved, monthSpent, monthUsed,
+  MARKS, STARTERS, catHistory, catState, makeCategory, monthFreed, monthFromPots, monthSaved, monthSpent, monthUsed,
   addedIn, ceilingIn, distributed, leftoverOf, makeExtra, monthsToGoal, monthsUpTo, poolAt, poolSources, potAt, targetIn, potBalance, searchTx, shiftYm, splitsOn, unsettled, used, ymOf,
 } from '../data.ts';
 import { money } from '../format.ts';
@@ -626,4 +626,24 @@ test('poolSources: names outside money alongside the other two', () => {
   const base = ledger({ cats: [cat('food', 'variable')], months: everyMonth(['2026-09'], { food: 40000 }) });
   const l = { ...base, months: { ...base.months, '2026-09': { ...base.months['2026-09'], added: 300000 } } };
   assert.deepEqual(poolSources(l, '2026-09'), { carried: 0, freed: 0, added: 300000 });
+});
+
+test('monthFromPots: reports what came out of pots, apart from the budget', () => {
+  const l = ledger({
+    cats: [pot('p'), cat('food', 'variable')],
+    months: everyMonth(['2026-08', '2026-09'], { p: 10000, food: 40000 }),
+    tx: [
+      tx({ id: 'w', cat: 'p', amount: 30000, date: '2026-09-10' }),
+      tx({ id: 'f', cat: 'food', amount: 5000, date: '2026-09-11' }),
+    ],
+  });
+  assert.equal(monthFromPots(l, '2026-09'), 30000);
+  assert.equal(monthSpent(l, '2026-09'), 5000, 'the budget still only counts the groceries');
+  // The month is unaffected: that 300 was charged to the months that saved it.
+  assert.equal(monthUsed(l, '2026-09'), 5000 + 10000);
+});
+
+test('monthFromPots: is zero when nothing came out', () => {
+  const l = ledger({ cats: [pot('p')], months: everyMonth(['2026-09'], { p: 10000 }) });
+  assert.equal(monthFromPots(l, '2026-09'), 0);
 });

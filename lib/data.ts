@@ -210,6 +210,18 @@ export function monthSaved(l: Ledger, ym: string): number {
     .reduce((a, c) => a + potAt(l, c, ym).contribution, 0);
 }
 
+/**
+ * Money taken out of pots this month. It is real spending and it left the
+ * account, but it is deliberately not part of the month's budget, because it
+ * was charged to the months that saved it. Shown apart for that reason.
+ */
+export function monthFromPots(l: Ledger, ym: string): number {
+  const pots = new Set(l.cats.filter((c) => c.kind === 'saving').map((c) => c.id));
+  return txOfMonth(l, ym)
+    .filter((t) => pots.has(t.cat))
+    .reduce((a, t) => a + t.amount, 0);
+}
+
 /** Contributions a full pot released this month, ready to go somewhere else. */
 export function monthFreed(l: Ledger, ym: string): number {
   return l.cats
