@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  catHistory, catState, monthSaved, monthSpent, monthUsed, monthsUpTo, potBalance, searchTx, shiftYm, splitsOn, unsettled, used, ymOf,
+  MARKS, STARTERS, catHistory, catState, makeCategory, monthSaved, monthSpent, monthUsed, monthsUpTo, potBalance, searchTx, shiftYm, splitsOn, unsettled, used, ymOf,
 } from '../data.ts';
 import { money } from '../format.ts';
 import type { Kind, Ledger, Tx } from '../types.ts';
@@ -314,4 +314,24 @@ test('the pot cycle: taking out more than the pot holds goes negative rather tha
     tx: [tx({ id: 'w', cat: 'trip', amount: 30000, date: '2026-09-10' })],
   });
   assert.equal(potBalance(l, 'trip', '2026-09'), -20000);
+});
+
+test('makeCategory: keeps the icon the user was shown', () => {
+  // Onboarding previews each starter with its own mark; creating it must not
+  // swap that for whatever the position in the list happens to map to.
+  const c = makeCategory('Contas Fixas', 'fixed', 0, 0, 'bar');
+  assert.equal(c.mark, 'bar');
+  const second = makeCategory('Supermercado', 'variable', 1, 1, 'circle');
+  assert.equal(second.mark, 'circle');
+});
+
+test('makeCategory: falls back to the position when no icon is given', () => {
+  assert.equal(makeCategory('Nova', 'variable', 0, 0).mark, MARKS[0]);
+  assert.equal(makeCategory('Outra', 'variable', 0, 3).mark, MARKS[3]);
+});
+
+test('makeCategory: every starter survives onboarding with its own icon', () => {
+  for (const [i, s] of STARTERS.entries()) {
+    assert.equal(makeCategory(s.pt, s.kind, s.ci, i, s.mark).mark, s.mark, s.key);
+  }
 });

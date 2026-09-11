@@ -79,8 +79,13 @@ export const STARTERS: Array<{ key: string; en: string; pt: string; kind: Kind; 
   { key: 'subs', en: 'Subscriptions', pt: 'Subscrições', kind: 'fixed', ci: 7, mark: 'square' },
 ];
 
-export function makeCategory(name: string, kind: Kind, ci: number, index: number): Category {
-  return { id: uid('c'), name, kind, mark: MARKS[index % MARKS.length], ...PALETTE[ci % PALETTE.length] };
+/**
+ * `mark` is the icon. Pass it to keep the one the user saw; leaving it out falls
+ * back to the position in the list, which is only sensible for a brand new
+ * category with nothing to preview.
+ */
+export function makeCategory(name: string, kind: Kind, ci: number, index: number, mark?: MarkKind): Category {
+  return { id: uid('c'), name, kind, mark: mark ?? MARKS[index % MARKS.length], ...PALETTE[ci % PALETTE.length] };
 }
 
 /** Returns the budget for a month, seeding it from the most recent earlier month. */

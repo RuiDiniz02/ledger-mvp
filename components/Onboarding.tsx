@@ -20,7 +20,8 @@ export default function Onboarding({ update }: { update: (fn: (d: Ledger) => voi
   const chosen = STARTERS.filter((s) => picked.includes(s.key));
 
   const finish = () => {
-    const cats = chosen.map((s, i) => makeCategory(lang === 'pt' ? s.pt : s.en, s.kind, s.ci, i));
+    // Keep the icon that was on screen when they picked it.
+    const cats = chosen.map((s, i) => makeCategory(lang === 'pt' ? s.pt : s.en, s.kind, s.ci, i, s.mark));
     const tg: Record<string, number> = {};
     cats.forEach((c, i) => {
       const raw = targets[chosen[i].key];

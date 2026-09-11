@@ -6,14 +6,14 @@ import Onboarding from './Onboarding';
 import { useLedger } from '@/lib/store';
 import { money, dayLabel } from '@/lib/format';
 import {
-  PALETTE, UNCAT_ID, allocated, catState, ensureMonth, iso, makeCategory, monthBudget, monthMeta,
+  MARKS, PALETTE, UNCAT_ID, allocated, catState, ensureMonth, iso, makeCategory, monthBudget, monthMeta,
   catHistory, monthSaved, monthSpent, orphanTx, potBalance, searchTx, shiftYm, spentBy, txOfMonth, uid, uncatFor,
   splitsOn, unsettled, used, ymLabel, ymNow, ymOf,
 } from '@/lib/data';
 import { copyBackup, parseBackup, readFile, saveBackup, summarize, type Summary } from '@/lib/backup';
 import { makeT } from '@/lib/i18n';
 import { tap, feedbackOn, setFeedback } from '@/lib/tap';
-import type { Category, Kind, Lang, Ledger, Tx } from '@/lib/types';
+import type { Category, Kind, Lang, Ledger, MarkKind, Tx } from '@/lib/types';
 
 const WARN_AT = 80;
 const CARD = 'rounded-[20px] border border-black/[0.06] bg-white';
@@ -24,7 +24,7 @@ const SHEET = 'anim-sheet absolute inset-x-0 bottom-0 z-50 rounded-t-[30px] bg-c
 
 type Screen = 'home' | 'activity' | 'budget' | 'me' | 'detail';
 type Draft = { id: string | null; amount: string; cat: string; date: string; note: string; scope: 'mine' | 'split'; pct: number };
-type CatForm = { id: string | null; name: string; kind: Kind; ci: number; target: string };
+type CatForm = { id: string | null; name: string; kind: Kind; ci: number; target: string; mark: MarkKind };
 type Sheet = null | 'log' | 'tx' | 'cat' | 'import';
 /** What to do with the expenses of a category being deleted. */
 type CatDelete = { count: number; mode: 'uncat' | 'move' | 'purge'; dest: string };
@@ -44,7 +44,7 @@ export default function App() {
   const [query, setQuery] = useState('');
   const [toast, setToast] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
-  const [form, setForm] = useState<CatForm>({ id: null, name: '', kind: 'variable', ci: 4, target: '' });
+  const [form, setForm] = useState<CatForm>({ id: null, name: '', kind: 'variable', ci: 4, target: '', mark: MARKS[0] });
   const [fb, setFb] = useState(true);
   // Raw keystrokes for the ceiling field, so "12.50" survives being typed.
   const [ceilDraft, setCeilDraft] = useState<string | null>(null);
@@ -151,6 +151,13 @@ export default function App() {
     const meta =
       virtual ? { color: '#8b969b', text: t('uncatBody'), bar: c.c }
       : pot ? { color: sp > 0 ? '#c8722a' : '#0b7b8f', text: (sp > 0 ? '−' : '+') + $(sp > 0 ? sp : target) + ' ' + t('thisMonthShort'), bar: c.c }
+      // A fixed category is money you had to spend, so it is reported against the
+      // plan rather than praised as "funded" or scolded as "over budget".
+      : c.kind === 'fixed' ? (
+          sp > target
+            ? { color: '#d8365b', text: t('overPlanned', { amount: $(sp - target) }), bar: '#ec6a86' }
+            : { color: '#8b969b', text: t('ofPlanned', { n: pct }), bar: c.c }
+        )
       : st === 'over' ? { color: '#d8365b', text: $(sp - target) + ' ' + t('overBy'), bar: '#ec6a86' }
       : st === 'funded' ? { color: '#0b7b8f', text: t('funded'), bar: c.c }
       : st === 'near' ? { color: '#c8722a', text: pct + '% ' + t('used') + ' — ' + t('tight'), bar: '#f4874b' }
@@ -228,8 +235,8 @@ export default function App() {
   const openCatForm = (c?: Category) => {
     if (c) {
       const ci = PALETTE.findIndex((p) => p.c === c.c);
-      setForm({ id: c.id, name: c.name, kind: c.kind, ci: ci < 0 ? 4 : ci, target: fromCents(mb.targets[c.id] || 0) });
-    } else setForm({ id: null, name: '', kind: 'variable', ci: 4, target: '' });
+      setForm({ id: c.id, name: c.name, kind: c.kind, ci: ci < 0 ? 4 : ci, target: fromCents(mb.targets[c.id] || 0), mark: c.mark });
+    } else setForm({ id: null, name: '', kind: 'variable', ci: 4, target: '', mark: MARKS[l.cats.length % MARKS.length] });
     setSheet('cat');
   };
 
@@ -240,10 +247,10 @@ export default function App() {
       const b = ensureMonth(d, ym);
       if (form.id) {
         const c = d.cats.find((x) => x.id === form.id);
-        if (c) { c.name = form.name.trim(); c.kind = form.kind; c.c = p.c; c.cl = p.cl; c.cd = p.cd; }
+        if (c) { c.name = form.name.trim(); c.kind = form.kind; c.mark = form.mark; c.c = p.c; c.cl = p.cl; c.cd = p.cd; }
         b.targets[form.id] = toCents(form.target);
       } else {
-        const c = makeCategory(form.name.trim(), form.kind, form.ci, d.cats.length);
+        const c = makeCategory(form.name.trim(), form.kind, form.ci, d.cats.length, form.mark);
         d.cats.push(c);
         b.targets[c.id] = toCents(form.target);
       }
@@ -1076,9 +1083,24 @@ export default function App() {
               <div className='mb-3.5 mt-2 px-1 text-[11.5px] leading-relaxed text-[#8b969b]'>
                 {form.kind === 'variable' ? t('kindVariableHelp') : form.kind === 'fixed' ? t('kindFixedHelp') : t('kindSavingHelp')}
               </div>
-              <div className='mb-[18px] flex gap-2.5'>
+              <div className='mb-2 flex gap-2.5'>
                 {PALETTE.map((p, i) => (
-                  <button key={i} onClick={() => { tap('light'); setForm({ ...form, ci: i }); }} className='h-10 flex-1 rounded-[13px]' style={{ background: 'linear-gradient(155deg,' + p.cl + ',' + p.c + ' 60%,' + p.cd + ')', boxShadow: form.ci === i ? '0 0 0 3px #12303a' : 'inset 0 1px 0 rgba(255,255,255,.5)' }} />
+                  <button key={i} onClick={() => { tap('light'); setForm({ ...form, ci: i }); }} aria-label={'Cor ' + (i + 1)} aria-pressed={form.ci === i} className='h-10 flex-1 rounded-[13px]' style={{ background: 'linear-gradient(155deg,' + p.cl + ',' + p.c + ' 60%,' + p.cd + ')', boxShadow: form.ci === i ? '0 0 0 3px #12303a' : 'inset 0 1px 0 rgba(255,255,255,.5)' }} />
+                ))}
+              </div>
+              <div className='mb-[18px] flex gap-2.5'>
+                {MARKS.map((mk) => (
+                  <button
+                    key={mk}
+                    onClick={() => { tap('light'); setForm({ ...form, mark: mk }); }}
+                    aria-label={mk}
+                    aria-pressed={form.mark === mk}
+                    className='grid h-10 flex-1 place-items-center rounded-[13px]'
+                    style={{ boxShadow: form.mark === mk ? '0 0 0 2.5px #12303a' : 'none', opacity: form.mark === mk ? 1 : 0.5 }}
+                  >
+                    {/* The real tile, so the row previews exactly what you will get. */}
+                    <Tile cat={{ id: mk, name: mk, kind: form.kind, mark: mk, ...PALETTE[form.ci] }} size={30} />
+                  </button>
                 ))}
               </div>
               {!catDel && (
