@@ -44,10 +44,32 @@ export interface Tx {
   source: Source;
 }
 
+/** Where money added to a month on top of the plan came from. */
+export type ExtraSource = 'carry' | 'freed' | 'outside';
+
+/**
+ * Money handed to this month beyond its ceiling. Kept as a list rather than
+ * folded into `ceiling` and `targets`, so the plan stays readable and the app
+ * can always say where a sum came from.
+ */
+export interface Extra {
+  id: string;
+  from: ExtraSource;
+  /**
+   * The category it was given to. Always a real one: money parked on the month
+   * at large would lift the ceiling without sitting in any budget, so it could
+   * never be spent or carried forward. Undecided money stays in the pool.
+   * `null` is tolerated only for rows written before that was settled.
+   */
+  to: string | null;
+  amount: number;
+}
+
 /** Budgets are per calendar month, keyed yyyy-mm. */
 export interface MonthBudget {
   ceiling: number;
   targets: Record<string, number>;
+  extra?: Extra[];
 }
 
 /** Bump on every shape change and add a step to MIGRATIONS in lib/store.ts. */

@@ -1,13 +1,14 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Tile, TabIcon } from './Icons';
 import Onboarding from './Onboarding';
 import { useLedger } from '@/lib/store';
 import { money, dayLabel } from '@/lib/format';
 import {
   MARKS, PALETTE, UNCAT_ID, allocated, catState, ensureMonth, iso, makeCategory, monthBudget, monthMeta,
-  catHistory, monthFreed, monthSaved, monthSpent, monthsToGoal, orphanTx, potAt, searchTx, shiftYm, spentBy, txOfMonth, uid, uncatFor,
+  catHistory, ceilingIn, distributed, makeExtra, monthFreed, monthSaved, monthSpent, monthsToGoal, orphanTx,
+  poolAt, poolSources, potAt, searchTx, targetIn, shiftYm, spentBy, txOfMonth, uid, uncatFor,
   splitsOn, unsettled, used, ymLabel, ymNow, ymOf,
 } from '@/lib/data';
 import { copyBackup, parseBackup, readFile, saveBackup, summarize, type Summary } from '@/lib/backup';
@@ -25,7 +26,7 @@ const SHEET = 'anim-sheet absolute inset-x-0 bottom-0 z-50 rounded-t-[30px] bg-c
 type Screen = 'home' | 'activity' | 'budget' | 'me' | 'detail';
 type Draft = { id: string | null; amount: string; cat: string; date: string; note: string; scope: 'mine' | 'split'; pct: number };
 type CatForm = { id: string | null; name: string; kind: Kind; ci: number; target: string; mark: MarkKind; goal: string };
-type Sheet = null | 'log' | 'tx' | 'cat' | 'import';
+type Sheet = null | 'log' | 'tx' | 'cat' | 'import' | 'pool';
 /** What to do with the expenses of a category being deleted. */
 type CatDelete = { count: number; mode: 'uncat' | 'move' | 'purge'; dest: string };
 
@@ -53,6 +54,7 @@ export default function App() {
   const [incoming, setIncoming] = useState<{ ledger: Ledger; summary: Summary } | null>(null);
   const [installer, setInstaller] = useState<{ prompt: () => Promise<void> } | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const [give, setGive] = useState<Record<string, number>>({});
 
   useEffect(() => { setFb(feedbackOn()); }, []);
 
@@ -63,6 +65,9 @@ export default function App() {
   }, [toast]);
 
   useEffect(() => { setCeilDraft(null); }, [ym]);
+  // poolAt walks every month on record, so it must not run on every keystroke.
+  const pool = useMemo(() => (data && data.onboarded ? poolAt(data, ym) : 0), [data, ym]);
+  const sources = useMemo(() => (data && data.onboarded ? poolSources(data, ym) : { carried: 0, freed: 0 }), [data, ym]);
   useEffect(() => { setArmDelete(false); setCatDel(null); }, [sheet, viewTx]);
 
   // Chrome and Android offer a real install prompt; iOS has none, so Account
@@ -139,8 +144,8 @@ export default function App() {
     : l.cats;
 
   const cats = shown.map((c) => {
-    const target = mb.targets[c.id] || 0;
     const virtual = c.virtual === true;
+    const target = virtual ? 0 : targetIn(l, ym, c.id);
     const sp = virtual ? orphans.reduce((a, t) => a + t.amount, 0) : spentBy(l, ym, c.id);
     // What this category costs the month, which is not the same as what was logged.
     const cost = virtual ? sp : used(c.kind, target, sp);
@@ -185,15 +190,16 @@ export default function App() {
   // gone from what you can spend but is not spending. Allocation is neither.
   const spent = monthSpent(l, ym);
   const saved = monthSaved(l, ym);
-  const alloc = allocated(mb, l.cats);
-  const remaining = mb.ceiling - spent - saved;
+  const alloc = l.cats.reduce((a, c) => a + targetIn(l, ym, c.id), 0);
+  const ceiling = ceilingIn(l, ym);
+  const remaining = ceiling - spent - saved;
   const varLeft = cats.filter((c) => c.kind === 'variable').reduce((a, c) => a + Math.max(0, c.target - c.spent), 0);
   const monthTx = txOfMonth(l, ym).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : a.id < b.id ? 1 : -1));
 
   let acc = 0;
   const parts: string[] = [];
   cats.filter((c) => c.cost > 0).forEach((c) => {
-    const share = Math.min(100 - acc, (c.cost / Math.max(mb.ceiling || spent + saved, spent + saved, 1)) * 100);
+    const share = Math.min(100 - acc, (c.cost / Math.max(ceiling || spent + saved, spent + saved, 1)) * 100);
     parts.push(c.c + ' ' + acc.toFixed(2) + '% ' + (acc + share).toFixed(2) + '%');
     acc += share;
   });
@@ -353,6 +359,47 @@ export default function App() {
 
   keys.current = { press: pressKey, save: saveTx };
 
+  // Distribution is drafted in state and written once, so a half-finished
+  // hand-out never lands in the ledger.
+  const given = Object.values(give).reduce((a, n) => a + n, 0);
+  const left = Math.max(0, pool - given);
+  const step = Math.max(100, Math.min(10000, Math.round(pool / 10 / 500) * 500 || 500));
+  const bump = (key: string, delta: number) =>
+    setGive((g) => {
+      const now = g[key] || 0;
+      const next = Math.max(0, Math.min(now + delta, now + Math.max(0, pool - Object.values(g).reduce((a, n) => a + n, 0))));
+      const out = { ...g };
+      if (next <= 0) delete out[key]; else out[key] = next;
+      return out;
+    });
+  const giveEverything = (key: string) =>
+    setGive((g) => {
+      const rest = pool - Object.values(g).reduce((a, n) => a + n, 0);
+      if (rest <= 0) return g;
+      return { ...g, [key]: (g[key] || 0) + rest };
+    });
+
+  const saveGive = () => {
+    const entries = Object.entries(give).filter(([, n]) => n > 0);
+    if (!entries.length) return;
+    // Whatever the pot released this month is spent first, then the carried money.
+    let freedLeft = sources.freed;
+    update((d) => {
+      const b = ensureMonth(d, ym);
+      b.extra = b.extra || [];
+      for (const [key, amount] of entries) {
+        const fromFreed = Math.min(freedLeft, amount);
+        freedLeft -= fromFreed;
+        if (fromFreed > 0) b.extra.push(makeExtra('freed', key, fromFreed));
+        if (amount - fromFreed > 0) b.extra.push(makeExtra('carry', key, amount - fromFreed));
+      }
+    });
+    tap('confirm');
+    setGive({});
+    setSheet(null);
+    setToast(t('extraGiven', { amount: $(given) }));
+  };
+
   const doExport = async () => {
     tap('light');
     const result = await saveBackup(l);
@@ -476,7 +523,7 @@ export default function App() {
                 </div>
               </div>
 
-              {mb.ceiling <= 0 ? (
+              {ceiling <= 0 ? (
                 <button onClick={() => go('budget')} className='block w-full text-left'>
                   <Empty title={t('noBudget')} body={t('noBudgetBody')} />
                 </button>
@@ -486,7 +533,7 @@ export default function App() {
                     <div className='grid h-28 w-28 shrink-0 place-items-center rounded-full' style={{ background: donut }}>
                       <div className='grid h-[78px] w-[78px] place-items-center rounded-full bg-deep text-center'>
                         <div>
-                          <div className='font-mono text-[21px] tracking-tight'>{Math.round(((spent + saved) / mb.ceiling) * 100)}%</div>
+                          <div className='font-mono text-[21px] tracking-tight'>{Math.round(((spent + saved) / ceiling) * 100)}%</div>
                           <div className='mt-[5px] text-[8.5px] font-semibold uppercase tracking-[0.1em] text-white/50'>{t('spent')}</div>
                         </div>
                       </div>
@@ -499,7 +546,7 @@ export default function App() {
                   {/* Full width, below the donut: three of these never fit beside it. */}
                   <div className='mt-[18px] flex gap-3 border-t border-white/10 pt-[15px]'>
                     {([
-                      [t('budgetLabel'), $(mb.ceiling, false), 'rgba(255,255,255,.9)'],
+                      [t('budgetLabel'), $(ceiling, false), 'rgba(255,255,255,.9)'],
                       [t('spent'), $(spent), 'rgba(255,255,255,.9)'],
                       ...(saved > 0 ? [[t('savedLabel'), $(saved), '#7fd9e6'] as const] : []),
                     ] as const).map(([label, value, colour]) => (
@@ -516,6 +563,31 @@ export default function App() {
                     </div>
                   )}
                 </div>
+              )}
+
+              {pool > 0 && (
+                <button
+                  onClick={() => { tap('light'); setGive({}); setSheet('pool'); }}
+                  className='anim-pop mt-3.5 flex w-full items-center gap-3 rounded-[18px] border border-[#17a8c0]/35 bg-white px-4 py-3.5 text-left'
+                >
+                  <div className='grid h-[30px] w-[30px] shrink-0 place-items-center rounded-[10px]' style={{ background: 'linear-gradient(155deg,#7fd9e6,#17a8c0 62%,#0b7b8f)', boxShadow: '0 5px 10px -4px rgba(23,168,192,.6), inset 0 1px 0 rgba(255,255,255,.55)' }}>
+                    <div className='relative grid h-3 w-3 place-items-center'>
+                      <div className='absolute h-[2px] w-3 rounded-sm bg-white' />
+                      <div className='absolute h-3 w-[2px] rounded-sm bg-white' />
+                    </div>
+                  </div>
+                  <div className='min-w-0 flex-1'>
+                    <div className='text-[13.5px] font-semibold text-ink'>{t('poolTitle', { amount: $(pool) })}</div>
+                    <div className='mt-0.5 truncate text-xs text-[#8b969b]'>
+                      {sources.carried > 0 && sources.freed > 0
+                        ? t('poolBoth', { carry: $(sources.carried, false), month: ymLabel(shiftYm(ym, -1), lang), freed: $(sources.freed, false) })
+                        : sources.freed > 0
+                        ? t('poolFromFreed', { amount: $(sources.freed, false) })
+                        : t('poolFromCarry', { amount: $(sources.carried, false), month: ymLabel(shiftYm(ym, -1), lang) })}
+                    </div>
+                  </div>
+                  <div className='text-xs font-semibold text-[#0b7b8f]'>{t('distribute')}</div>
+                </button>
               )}
 
               {alert && (
@@ -639,7 +711,7 @@ export default function App() {
                 <button onClick={() => { tap('light'); setYm(shiftYm(ym, 1)); }} className='grid h-7 w-7 place-items-center rounded-full bg-white text-[#5b6a70] border border-black/[0.08]'>›</button>
                 <span className='ml-auto text-[11px] text-[#8b969b]'>{t('perMonth')}</span>
               </div>
-              {!l.months[ym] && mb.ceiling > 0 && (
+              {!l.months[ym] && ceiling > 0 && (
                 <div className='mb-4 rounded-[16px] border border-black/[0.06] bg-white px-3.5 py-3 text-[11.5px] leading-relaxed text-[#8b969b]'>
                   {t('copiedFromPrev')}
                 </div>
@@ -664,15 +736,23 @@ export default function App() {
                     className='w-full bg-transparent font-mono text-[28px] tracking-[-0.03em] text-ink outline-none'
                   />
                 </div>
-                {mb.ceiling > 0 && (
+                {ceiling > 0 && (
                   <>
                     <div className='mb-2 mt-4 h-2 overflow-hidden rounded-full bg-[#eceff0]'>
-                      <div className='h-full' style={{ width: Math.min(100, (alloc / mb.ceiling) * 100) + '%', background: alloc > mb.ceiling ? '#d8365b' : alloc < mb.ceiling ? '#c8722a' : '#0b7b8f' }} />
+                      <div className='h-full' style={{ width: Math.min(100, (alloc / ceiling) * 100) + '%', background: alloc > ceiling ? '#d8365b' : alloc < ceiling ? '#c8722a' : '#0b7b8f' }} />
                     </div>
+                    {/* The plan and what was added to it stay separate, so the ceiling
+                        keeps meaning "the most I want to spend". */}
+                    {distributed(l, ym) > 0 && (
+                      <div className='mb-2 flex justify-between font-mono text-[11.5px]'>
+                        <span className='text-[#0b7b8f]'>{t('extraInMonth', { amount: $(distributed(l, ym), false) })}</span>
+                        <span className='text-[#8b969b]'>{t('extraOrigin')}</span>
+                      </div>
+                    )}
                     <div className='flex justify-between font-mono text-[11.5px]'>
                       <span className='text-[#8b969b]'>{$(alloc, false)} {t('allocated')}</span>
-                      <span style={{ color: alloc > mb.ceiling ? '#d8365b' : alloc < mb.ceiling ? '#c8722a' : '#0b7b8f' }}>
-                        {alloc === mb.ceiling ? t('fullyAllocated') : alloc > mb.ceiling ? $(alloc - mb.ceiling, false) + ' ' + t('overCeiling') : $(mb.ceiling - alloc, false) + ' ' + t('unallocated')}
+                      <span style={{ color: alloc > ceiling ? '#d8365b' : alloc < ceiling ? '#c8722a' : '#0b7b8f' }}>
+                        {alloc === ceiling ? t('fullyAllocated') : alloc > ceiling ? $(alloc - ceiling, false) + ' ' + t('overCeiling') : $(ceiling - alloc, false) + ' ' + t('unallocated')}
                       </span>
                     </div>
                   </>
@@ -687,17 +767,17 @@ export default function App() {
                       <Tile cat={c} size={34} />
                       <div className='min-w-0 flex-1'>
                         <div className='truncate text-[13.5px] font-semibold text-ink'>{c.name}</div>
-                        <div className='mt-[3px] text-[11px] text-[#8b969b]'>{kindLabel(c.kind)}{mb.ceiling > 0 && c.target > 0 ? ' · ' + Math.round((c.target / mb.ceiling) * 100) + '%' : ''}</div>
+                        <div className='mt-[3px] text-[11px] text-[#8b969b]'>{kindLabel(c.kind)}{ceiling > 0 && c.target > 0 ? ' · ' + Math.round((c.target / ceiling) * 100) + '%' : ''}</div>
                       </div>
                       <div className='shrink-0 font-mono text-[15px] text-ink'>{$(c.target, false)}</div>
                     </button>
                     <input
-                      type='range' min={0} max={Math.max(mb.ceiling || 200000, c.target)} step={500} value={c.target}
+                      type='range' min={0} max={Math.max(ceiling || 200000, c.target)} step={500} value={c.target}
                       onChange={(e) => { const v = parseInt(e.target.value, 10); update((d) => { ensureMonth(d, ym).targets[c.id] = v; }); }}
                       className='mt-3 w-full' style={{ accentColor: c.c }}
                     />
                     <div className='mt-0.5 flex justify-between font-mono text-[10.5px] text-[#b3bcbf]'>
-                      <span>0</span><span>{c.pot ? t('potBalanceLabel') + ' ' + $(c.balance) : t('spent') + ' ' + $(c.spent)}</span><span>{$(Math.max(mb.ceiling || 200000, c.target), false)}</span>
+                      <span>0</span><span>{c.pot ? t('potBalanceLabel') + ' ' + $(c.balance) : t('spent') + ' ' + $(c.spent)}</span><span>{$(Math.max(ceiling || 200000, c.target), false)}</span>
                     </div>
                   </div>
                 ))}
@@ -1191,6 +1271,60 @@ export default function App() {
                   </div>
                 </div>
               )}
+            </div>
+          </>
+        )}
+
+        {sheet === 'pool' && (
+          <>
+            <div className={SCRIM} onClick={closeSheet} />
+            <div role='dialog' aria-modal='true' aria-label={t('distribute')} className={SHEET + ' flex max-h-[94%] flex-col px-[18px] pt-2.5'} style={{ paddingBottom: 'calc(18px + env(safe-area-inset-bottom))' }}>
+              <div className='mx-auto mb-3 mt-0.5 h-1 w-[38px] shrink-0 rounded-full bg-black/15' />
+              <div className='shrink-0'>
+                <div className='flex items-baseline justify-between'>
+                  <div className='text-[17px] font-bold text-ink'>{t('distribute')}</div>
+                  <div key={left} className='anim-bump font-mono text-[26px] tracking-[-0.03em]' style={{ color: left === 0 ? '#0b7b8f' : '#16242a' }}>{$(left)}</div>
+                </div>
+                <div className='mt-0.5 flex items-baseline justify-between'>
+                  <div className='text-[11.5px] text-[#8b969b]'>{t('giveAll')}</div>
+                  <div className='text-[11px] text-[#8b969b]'>{t('stillToPlace')}</div>
+                </div>
+              </div>
+
+              <div className='-mx-[18px] mt-3 min-h-0 flex-1 overflow-y-auto overscroll-contain px-[18px]'>
+                {/* Only real categories. Money parked on the month at large would
+                    raise the ceiling without sitting in any budget, so it could
+                    never be spent or carried and would quietly evaporate.
+                    Undecided money belongs in the pool, which never expires. */}
+                {realCats.map((c) => ({ key: c.id, name: c.name, cat: c })).map((row) => {
+                  const amount = give[row.key] || 0;
+                  return (
+                    <div key={row.key} className='flex items-center gap-2.5 border-t border-black/[0.06] py-2.5 first:border-t-0'>
+                      <Tile cat={row.cat} size={30} />
+                      <div className='min-w-0 flex-1 truncate text-[13px] font-semibold text-ink'>{row.name}</div>
+                      <button onClick={() => { tap('key'); bump(row.key, -step); }} disabled={amount <= 0} aria-label='−' className='grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-white' style={{ opacity: amount > 0 ? 1 : 0.35 }}>
+                        <div className='h-[2.5px] w-2.5 rounded-sm bg-ink' />
+                      </button>
+                      <button onClick={() => { tap('light'); giveEverything(row.key); }} className='min-w-[62px] shrink-0 text-center font-mono text-[13px]' style={{ color: amount > 0 ? '#0b7b8f' : '#b3bcbf' }}>
+                        {amount > 0 ? $(amount, false) : '—'}
+                      </button>
+                      <button onClick={() => { tap('key'); bump(row.key, step); }} disabled={left <= 0} aria-label='+' className='relative grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-white' style={{ opacity: left > 0 ? 1 : 0.35 }}>
+                        <div className='absolute h-[2.5px] w-2.5 rounded-sm bg-ink' />
+                        <div className='absolute h-2.5 w-[2.5px] rounded-sm bg-ink' />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className='shrink-0 pt-3'>
+                {given > 0 && (
+                  <button onClick={() => { tap('back'); setGive({}); }} className='mb-2 h-[38px] w-full rounded-[14px] text-[12.5px] font-semibold text-[#5b6a70]'>{t('undoAll')}</button>
+                )}
+                <button onClick={saveGive} disabled={given <= 0} className='h-[54px] w-full rounded-[18px] text-[15px] font-bold text-white transition-colors' style={{ background: given > 0 ? '#12303a' : 'rgba(22,36,42,.22)' }}>
+                  {given > 0 ? t('doneDistributing') + ' · ' + $(given) : t('doneDistributing')}
+                </button>
+              </div>
             </div>
           </>
         )}

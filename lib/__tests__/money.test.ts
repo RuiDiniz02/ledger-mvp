@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MARKS, STARTERS, catHistory, catState, makeCategory, monthFreed, monthSaved, monthSpent, monthUsed,
-  monthsToGoal, monthsUpTo, potAt, potBalance, searchTx, shiftYm, splitsOn, unsettled, used, ymOf,
+  ceilingIn, distributed, leftoverOf, makeExtra, monthsToGoal, monthsUpTo, poolAt, poolSources, potAt, targetIn, potBalance, searchTx, shiftYm, splitsOn, unsettled, used, ymOf,
 } from '../data.ts';
 import { money } from '../format.ts';
 import type { Kind, Ledger, Tx } from '../types.ts';
@@ -432,4 +432,161 @@ test('goal: the month a pot fills up, it still contributed', () => {
   );
   assert.equal(oct.contribution, 0, 'October is the first month it takes nothing');
   assert.equal(oct.freed, 20000);
+});
+
+const withExtra = (l: Ledger, ym: string, to: string | null, amount: number): Ledger => ({
+  ...l,
+  months: { ...l.months, [ym]: { ...l.months[ym], extra: [...(l.months[ym].extra ?? []), makeExtra('carry', to, amount)] } },
+});
+
+test('leftover: counts what variable categories did not spend', () => {
+  const l = ledger({
+    cats: [cat('food', 'variable'), cat('fun', 'variable')],
+    months: everyMonth(['2026-08'], { food: 40000, fun: 20000 }),
+    tx: [tx({ id: 'a', cat: 'food', amount: 35000, date: '2026-08-04' })],
+  });
+  assert.equal(leftoverOf(l, '2026-08'), 5000 + 20000);
+});
+
+test('leftover: an unpaid bill is not a saving', () => {
+  const l = ledger({
+    cats: [cat('rent', 'fixed'), cat('food', 'variable')],
+    months: everyMonth(['2026-08'], { rent: 80000, food: 40000 }),
+    tx: [tx({ id: 'a', cat: 'food', amount: 40000, date: '2026-08-04' })],
+  });
+  assert.equal(leftoverOf(l, '2026-08'), 0, 'the 800 of rent is still owed, not spare');
+});
+
+test('leftover: overspending in one category eats the slack in another', () => {
+  const l = ledger({
+    cats: [cat('food', 'variable'), cat('fun', 'variable')],
+    months: everyMonth(['2026-08'], { food: 40000, fun: 20000 }),
+    tx: [
+      tx({ id: 'a', cat: 'food', amount: 45000, date: '2026-08-04' }),
+      tx({ id: 'b', cat: 'fun', amount: 12000, date: '2026-08-06' }),
+    ],
+  });
+  assert.equal(leftoverOf(l, '2026-08'), 3000, '−50 over plus 80 under');
+});
+
+test('leftover: a month that spent everything leaves nothing, never a negative', () => {
+  const l = ledger({
+    cats: [cat('food', 'variable')],
+    months: everyMonth(['2026-08'], { food: 40000 }),
+    tx: [tx({ id: 'a', cat: 'food', amount: 90000, date: '2026-08-04' })],
+  });
+  assert.equal(leftoverOf(l, '2026-08'), 0);
+});
+
+test('pool: last month leftover and a full pot land in the same place', () => {
+  const l = ledger({
+    cats: [cat('food', 'variable'), pot('p', 20000)],
+    months: everyMonth(['2026-07', '2026-08', '2026-09'], { food: 40000, p: 10000 }),
+    tx: [
+      tx({ id: 'j', cat: 'food', amount: 40000, date: '2026-07-04' }), // July spent its budget
+      tx({ id: 'a', cat: 'food', amount: 25000, date: '2026-08-04' }), // August left 150
+    ],
+  });
+  // The pot filled in August, so September is the first month it takes nothing.
+  assert.equal(monthFreed(l, '2026-09'), 10000);
+  assert.equal(poolAt(l, '2026-09'), 15000 + 10000);
+});
+
+test('pool: nothing expires when a month is skipped', () => {
+  const l = ledger({
+    cats: [cat('food', 'variable')],
+    months: everyMonth(['2026-07', '2026-08', '2026-09'], { food: 40000 }),
+    tx: [tx({ id: 'a', cat: 'food', amount: 30000, date: '2026-07-04' })],
+  });
+  // A month still running has not left anything yet: August only sees July's 100.
+  assert.equal(poolAt(l, '2026-08'), 10000);
+  // Nobody handed it out, so in September it is still there, joined by August's whole 400.
+  assert.equal(poolAt(l, '2026-09'), 10000 + 40000);
+});
+
+test('pool: handing money out takes it out of the pool', () => {
+  const base = ledger({
+    cats: [cat('food', 'variable'), cat('fun', 'variable')],
+    months: everyMonth(['2026-08', '2026-09'], { food: 40000, fun: 0 }),
+    tx: [tx({ id: 'a', cat: 'food', amount: 30000, date: '2026-08-04' })],
+  });
+  assert.equal(poolAt(base, '2026-09'), 10000);
+  const after = withExtra(base, '2026-09', 'fun', 10000);
+  assert.equal(poolAt(after, '2026-09'), 0);
+});
+
+test('distribution: money given to a category raises that budget, not the plan', () => {
+  const base = ledger({
+    cats: [cat('fun', 'variable')],
+    months: everyMonth(['2026-09'], { fun: 20000 }),
+  });
+  const after = withExtra(base, '2026-09', 'fun', 5000);
+  assert.equal(targetIn(after, '2026-09', 'fun'), 25000);
+  assert.equal(after.months['2026-09'].targets.fun, 20000, 'the planned figure is untouched');
+  assert.equal(ceilingIn(after, '2026-09'), 200000 + 5000);
+});
+
+test('distribution: money left undecided stays in the pool instead of evaporating', () => {
+  const l = ledger({
+    cats: [cat('fun', 'variable')],
+    months: everyMonth(['2026-08', '2026-09'], { fun: 20000 }),
+  });
+  // August left 200 and none of it was handed out. It is still waiting.
+  assert.equal(poolAt(l, '2026-09'), 20000);
+  assert.equal(distributed(l, '2026-09'), 0);
+  // Handing part of it out leaves the rest in the pool, not nowhere.
+  const after = withExtra(l, '2026-09', 'fun', 8000);
+  assert.equal(poolAt(after, '2026-09'), 12000);
+  assert.equal(targetIn(after, '2026-09', 'fun'), 28000);
+});
+
+test('distribution: carried money keeps carrying while it sits in a variable budget', () => {
+  const l = ledger({
+    cats: [cat('fun', 'variable')],
+    months: everyMonth(['2026-08', '2026-09', '2026-10'], { fun: 20000 }),
+  });
+  const after = withExtra(l, '2026-09', 'fun', 20000);
+  assert.equal(targetIn(after, '2026-09', 'fun'), 40000);
+  // Nothing spent in September, so all 400 rolls on rather than being lost.
+  assert.equal(leftoverOf(after, '2026-09'), 40000);
+});
+
+test('distribution: carried money that is still unspent carries again', () => {
+  const base = ledger({
+    cats: [cat('fun', 'variable')],
+    months: everyMonth(['2026-08', '2026-09'], { fun: 10000 }),
+  });
+  // August left 100; give it to September's fun, spend nothing, and it is 200 next month.
+  const after = withExtra(base, '2026-09', 'fun', 10000);
+  assert.equal(targetIn(after, '2026-09', 'fun'), 20000);
+  assert.equal(leftoverOf(after, '2026-09'), 20000, 'the money keeps moving forward until spent');
+});
+
+test('distribution: money put into a pot really goes in the pot', () => {
+  const base = ledger({ cats: [pot('p')], months: everyMonth(['2026-08', '2026-09'], { p: 10000 }) });
+  assert.equal(potAt(base, pot('p'), '2026-09').balance, 20000);
+  const after = withExtra(base, '2026-09', 'p', 50000);
+  assert.equal(potAt(after, pot('p'), '2026-09').balance, 70000);
+});
+
+test('poolSources: names the two places the money came from', () => {
+  const l = ledger({
+    cats: [cat('food', 'variable'), pot('p', 20000)],
+    months: everyMonth(['2026-07', '2026-08', '2026-09'], { food: 40000, p: 10000 }),
+    tx: [tx({ id: 'a', cat: 'food', amount: 25000, date: '2026-08-04' })],
+  });
+  assert.deepEqual(poolSources(l, '2026-09'), { carried: 15000, freed: 10000 });
+});
+
+test('pool: a ledger with no history has nothing to hand out', () => {
+  assert.equal(poolAt(ledger(), '2026-09'), 0);
+  assert.equal(poolAt(ledger({ months: everyMonth(['2026-09'], {}) }), '2026-09'), 0);
+});
+
+test('pool: the month you are in has not left anything over yet', () => {
+  const l = ledger({
+    cats: [cat('food', 'variable')],
+    months: everyMonth(['2026-09'], { food: 40000 }),
+  });
+  assert.equal(poolAt(l, '2026-09'), 0, 'September is still running; its slack is not spare money');
 });

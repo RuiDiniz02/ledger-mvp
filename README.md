@@ -55,7 +55,14 @@ Then open it, let the worker register, and use your browser's offline mode or st
 
   A pot can carry an optional `goal`. Once its balance reaches it the pot stops taking its contribution, and `monthFreed()` reports the money that frees up. Taking money out starts it filling again on its own. Because each month then depends on the one before it, `potAt()` walks the months rather than summing them, topping the pot up first and spending from it second.
 - **A category's kind is about whether the app warns you, not about the amount being identical.** Fuel and haircuts belong in `fixed` even though the amount moves: you had to spend it, so a warning at 80% would be noise.
-- **Calendar month, no rollover** for variable and fixed. Pots are the deliberate exception: carrying over is the entire point of a pot.
+- **Leftovers carry, but only when you say where to.** A finished month's unspent variable budget, plus anything a full pot released, builds up in a pool (`poolAt()`). The Overview shows a card when there is something in it; tapping it opens a sheet that hands the money to categories. Nothing expires, so skipping a month costs nothing, and the pool doubles as the "decide later" bucket.
+
+  Money can only be given to a real category. There is deliberately no "add it to the month in general": that would lift the ceiling without landing in any budget, so it could never be spent or carried and would quietly evaporate.
+
+  An allocation is stored as an `Extra` on the month rather than folded into `ceiling` and `targets`, so the plan stays readable and Budget can show what was added and where it came from. This is what keeps the ceiling meaning "the most I want to spend" instead of drifting into a current-account balance.
+
+  Only variable categories leave anything behind. Money still sitting in a fixed category is an unpaid bill, not a saving, and carrying it would hand over money you still need. Unallocated ceiling is not cash either.
+- **Calendar month, no rollover by default** for variable and fixed: nothing moves unless it is handed out. Pots are the exception, since carrying over is the entire point of a pot.
 - **Per-expense splits, off by default.** Every transaction still stores `scope`, `pct` (your share) and `paidBy`, so adding a second member later is a join, not a migration. The controls stay hidden until someone turns them on in Account, because until there is a second person the settle-up balance is a number nobody can settle. `splitsOn()` shows them anyway for anyone whose ledger already has split rows.
 - **Money is integer minor units (cents)** everywhere. Never floats.
 - **Append-only intent.** Each row carries `source: 'manual' | 'bank' | 'recurring'` so a bank import cannot overwrite hand-entered history. Editing an expense keeps its `id`, `paidBy` and `source`.

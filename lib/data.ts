@@ -1,4 +1,4 @@
-import { SCHEMA, type Category, type CatState, type Kind, type Ledger, type MarkKind, type MonthBudget, type Tx } from './types';
+import { SCHEMA, type Category, type CatState, type Extra, type ExtraSource, type Kind, type Ledger, type MarkKind, type MonthBudget, type Tx } from './types';
 
 /** Collision-proof even when several rows are created in the same millisecond. */
 export function uid(prefix: string): string {
@@ -177,7 +177,7 @@ export function potAt(l: Ledger, cat: Category, ym: string): PotState {
   let contribution = 0;
   let planned = 0;
   for (const k of monthsUpTo(l, ym)) {
-    const target = Math.max(0, monthBudget(l, k).targets[cat.id] || 0);
+    const target = targetIn(l, k, cat.id);
     const room = goal === null ? target : Math.max(0, Math.min(target, goal - balance));
     balance += room - (out[k] || 0);
     if (k === ym) { contribution = room; planned = target; }
@@ -239,7 +239,7 @@ export function catHistory(l: Ledger, c: Category, ym: string, n = 6) {
     const value =
       c.kind === 'saving'
         ? potBalance(l, c, k)
-        : used(c.kind, b.targets[c.id] || 0, spentBy(l, k, c.id));
+        : used(c.kind, targetIn(l, k, c.id), spentBy(l, k, c.id));
     out.push({ ym: k, value });
   }
   return out;
@@ -258,3 +258,66 @@ export function searchTx(l: Ledger, query: string): Tx[] {
 
 /** Shared expenses are off until asked for, but never hidden from someone using them. */
 export const splitsOn = (l: Ledger) => l.splits ?? l.tx.some((t) => t.scope === 'split');
+
+
+/** Extra money given to one category in a month, or to the month at large. */
+export function extraFor(l: Ledger, ym: string, to: string | null): number {
+  const b = l.months[ym];
+  if (!b || !b.extra) return 0;
+  return b.extra.filter((e) => e.to === to).reduce((a, e) => a + e.amount, 0);
+}
+
+/** Everything handed out in a month, wherever it went. */
+export function distributed(l: Ledger, ym: string): number {
+  const b = l.months[ym];
+  return b && b.extra ? b.extra.reduce((a, e) => a + e.amount, 0) : 0;
+}
+
+/** A category's budget for a month: what was planned, plus anything given to it. */
+export function targetIn(l: Ledger, ym: string, catId: string): number {
+  return Math.max(0, monthBudget(l, ym).targets[catId] || 0) + extraFor(l, ym, catId);
+}
+
+/** The month's ceiling, plus everything handed to it from outside the plan. */
+export function ceilingIn(l: Ledger, ym: string): number {
+  return monthBudget(l, ym).ceiling + distributed(l, ym);
+}
+
+/**
+ * What a finished month left behind: the net across variable categories only.
+ *
+ * Money still sitting in a fixed category is not a saving, it is a bill that
+ * has not been paid yet, and carrying it would hand over money you still need.
+ * Unallocated ceiling is not carried either — the ceiling is a limit, not cash.
+ */
+export function leftoverOf(l: Ledger, ym: string): number {
+  if (!monthsUpTo(l, ym).length) return 0;
+  const net = l.cats
+    .filter((c) => c.kind === 'variable')
+    .reduce((a, c) => a + (targetIn(l, ym, c.id) - spentBy(l, ym, c.id)), 0);
+  return Math.max(0, net);
+}
+
+/**
+ * Money waiting to be given a home, as of the end of `ym`. It builds up from
+ * what each finished month left over and what full pots released, less whatever
+ * has already been handed out. Nothing expires: skip a month and it is still here.
+ */
+export function poolAt(l: Ledger, ym: string): number {
+  let pool = 0;
+  for (const k of monthsUpTo(l, ym)) {
+    pool += leftoverOf(l, shiftYm(k, -1));
+    pool += monthFreed(l, k);
+    pool -= distributed(l, k);
+  }
+  return Math.max(0, pool);
+}
+
+/** Where this month's pool came from, for the line under the prompt. */
+export function poolSources(l: Ledger, ym: string) {
+  return { carried: leftoverOf(l, shiftYm(ym, -1)), freed: monthFreed(l, ym) };
+}
+
+export function makeExtra(from: ExtraSource, to: string | null, amount: number): Extra {
+  return { id: uid('e'), from, to, amount };
+}
