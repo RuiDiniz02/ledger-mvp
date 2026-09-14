@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { SCHEMA, type Ledger } from './types';
 import { emptyLedger } from './data';
+import { validLedger } from './validation';
 
 const KEY = 'ledger.mvp.v2';
 /** Anything we could not read is parked here rather than thrown away. */
@@ -22,6 +23,7 @@ const MIGRATIONS: Record<number, (d: Record<string, unknown>) => Record<string, 
     return {
       ...d,
       tx: tx.map((r) => {
+        if (!r || typeof r !== 'object') return r;
         const row = r as Record<string, unknown>;
         return {
           ...row,
@@ -43,7 +45,7 @@ export function migrate(input: unknown): Ledger | null {
   if (!Array.isArray(d.cats) || !Array.isArray(d.tx) || typeof d.months !== 'object' || d.months === null) return null;
 
   let v = typeof d.v === 'number' ? d.v : 2;
-  if (v > SCHEMA) return null; // written by a newer build; refuse rather than corrupt it
+  if (!Number.isInteger(v) || v < 0 || v > SCHEMA) return null; // written by a newer build; refuse rather than corrupt it
   while (v < SCHEMA) {
     const step = MIGRATIONS[v];
     if (!step) return null;
@@ -53,6 +55,7 @@ export function migrate(input: unknown): Ledger | null {
     v = next;
   }
 
+  if (!validLedger(d)) return null;
   const base = emptyLedger();
   return {
     ...base,
@@ -71,6 +74,9 @@ export function migrate(input: unknown): Ledger | null {
 export function useLedger() {
   const [data, setData] = useState<Ledger | null>(null);
   const [storage, setStorage] = useState<StorageInfo>({ persisted: false, usedKb: null, standalone: false });
+  const [storageError, setStorageError] = useState(false);
+  const [recoveryNeeded, setRecoveryNeeded] = useState(false);
+  const writable = useRef(true);
   const pending = useRef<Ledger | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -78,25 +84,33 @@ export function useLedger() {
     if (timer.current) { clearTimeout(timer.current); timer.current = null; }
     const next = pending.current;
     if (!next) return;
-    pending.current = null;
-    try { window.localStorage.setItem(KEY, JSON.stringify(next)); } catch {}
+    if (!writable.current) { setStorageError(true); return; }
+    try {
+      window.localStorage.setItem(KEY, JSON.stringify(next));
+      pending.current = null;
+      setStorageError(false);
+    } catch { setStorageError(true); }
   }, []);
 
   useEffect(() => {
     let next: Ledger | null = null;
+    let raw: string | null = null;
     try {
-      const raw = window.localStorage.getItem(KEY);
+      raw = window.localStorage.getItem(KEY);
       if (raw) {
-        next = migrate(JSON.parse(raw));
-        if (next) {
-          // Persist the upgraded shape so the next load has no work to do.
-          window.localStorage.setItem(KEY, JSON.stringify(next));
-        } else {
-          // Unreadable, but never dropped: keep it aside so it can be recovered.
-          window.localStorage.setItem(QUARANTINE, raw);
+        try { next = migrate(JSON.parse(raw)); } catch { next = null; }
+        if (!next) {
+          // Preserve every unreadable payload, including invalid JSON, before allowing writes.
+          const key = window.localStorage.getItem(QUARANTINE) ? QUARANTINE + '.' + Date.now() : QUARANTINE;
+          window.localStorage.setItem(key, raw);
+          setRecoveryNeeded(true);
         }
       }
-    } catch {}
+    } catch {
+      writable.current = false;
+      setStorageError(true);
+      if (raw) setRecoveryNeeded(true);
+    }
     setData(next ?? emptyLedger());
   }, []);
 
@@ -150,13 +164,11 @@ export function useLedger() {
       if (timer.current) clearTimeout(timer.current);
       timer.current = setTimeout(() => {
         timer.current = null;
-        const next = pending.current;
-        pending.current = null;
-        if (next) { try { window.localStorage.setItem(KEY, JSON.stringify(next)); } catch {} }
+        flush();
       }, 150);
       return draft;
     });
-  }, []);
+  }, [flush]);
 
   /** Replaces the whole ledger — used by Import, which has already validated it. */
   const replace = useCallback((next: Ledger) => {
@@ -172,5 +184,5 @@ export function useLedger() {
     setData(emptyLedger());
   }, []);
 
-  return { data, update, replace, reset, storage };
+  return { data, update, replace, reset, storage, storageError, recoveryNeeded };
 }

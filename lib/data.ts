@@ -60,7 +60,7 @@ export function monthMeta(ym: string, now = new Date()) {
   const isCurrent = ym === iso(now).slice(0, 7);
   const past = ym < iso(now).slice(0, 7);
   const day = isCurrent ? now.getDate() : past ? days : 0;
-  return { day, days, isCurrent, past, daysLeft: Math.max(1, days - day + 1) };
+  return { day, days, isCurrent, past, daysLeft: past ? 0 : isCurrent ? days - day + 1 : days };
 }
 
 export function emptyLedger(): Ledger {
@@ -137,7 +137,8 @@ export function catState(kind: Kind, target: number, spent: number, warnAt = 80)
 /** Every month from the first one on record up to and including `ym`. */
 export function monthsUpTo(l: Ledger, ym: string, cap = 600): string[] {
   const keys = Object.keys(l.months).sort();
-  let cur = keys.length && keys[0] < ym ? keys[0] : ym;
+  if (!keys.length || keys[0] > ym) return [];
+  let cur = keys[0];
   if (cur > ym) return [];
   const out: string[] = [];
   while (cur <= ym && out.length < cap) { out.push(cur); cur = shiftYm(cur, 1); }
@@ -313,7 +314,7 @@ export function leftoverOf(l: Ledger, ym: string): number {
   const net = l.cats
     .filter((c) => c.kind === 'variable')
     .reduce((a, c) => a + (targetIn(l, ym, c.id) - spentBy(l, ym, c.id)), 0);
-  return Math.max(0, net);
+  return Math.max(0, Math.min(net, spendingRoom(l, ym).available));
 }
 
 /**
@@ -339,4 +340,29 @@ export function poolSources(l: Ledger, ym: string) {
 
 export function makeExtra(from: ExtraSource, to: string | null, amount: number): Extra {
   return { id: uid('e'), from, to, amount };
+}
+
+/** Unpaid commitments must remain reserved even though they are not expenses. */
+export function fixedReserved(l: Ledger, ym: string): number {
+  return l.cats.filter(c => c.kind === 'fixed').reduce((sum, c) =>
+    sum + Math.max(0, targetIn(l, ym, c.id) - spentBy(l, ym, c.id)), 0);
+}
+
+/** Released savings already belong to the pool: never count them in both places. */
+export function spendingRoom(l: Ledger, ym: string) {
+  const remaining = ceilingIn(l, ym) - monthSpent(l, ym) - monthSaved(l, ym) - monthFreed(l, ym);
+  const reserved = fixedReserved(l, ym);
+  return { remaining, reserved, available: remaining - reserved };
+}
+
+/** A budget estimate, not a bank balance. Round down so the daily plan fits. */
+export function dailyBudget(l: Ledger, ym: string, now = new Date()) {
+  const room = spendingRoom(l, ym);
+  const variableNet = l.cats.filter(c => c.kind === 'variable').reduce((sum, c) =>
+    sum + targetIn(l, ym, c.id) - spentBy(l, ym, c.id), 0)
+    - orphanTx(l, ym).reduce((sum, tx) => sum + tx.amount, 0);
+  const spendable = Math.max(0, Math.min(variableNet, room.available));
+  const meta = monthMeta(ym, now);
+  return { ...room, variableNet, spendable, days: meta.daysLeft,
+    daily: meta.isCurrent ? Math.floor(spendable / meta.daysLeft) : null };
 }

@@ -4,12 +4,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Tile, TabIcon } from './Icons';
 import Onboarding from './Onboarding';
 import { useLedger } from '@/lib/store';
-import { money, dayLabel } from '@/lib/format';
+import { money, dayLabel, parseMoney } from '@/lib/format';
 import {
-  MARKS, PALETTE, UNCAT_ID, allocated, catState, ensureMonth, iso, makeCategory, monthBudget, monthMeta,
+  MARKS, PALETTE, UNCAT_ID, dailyBudget, catState, ensureMonth, iso, makeCategory, monthBudget, monthMeta,
   catHistory, ceilingIn, distributed, makeExtra, monthFreed, monthFromPots, monthSaved, monthSpent, monthsToGoal, orphanTx,
   poolAt, poolSources, potAt, searchTx, targetIn, shiftYm, spentBy, txOfMonth, uid, uncatFor,
-  splitsOn, unsettled, used, ymLabel, ymNow, ymOf,
+  splitsOn, unsettled, ymLabel, ymNow, ymOf,
 } from '@/lib/data';
 import { copyBackup, parseBackup, readFile, saveBackup, summarize, type Summary } from '@/lib/backup';
 import { makeT } from '@/lib/i18n';
@@ -18,7 +18,7 @@ import type { Category, Kind, Lang, Ledger, MarkKind, Tx } from '@/lib/types';
 
 const WARN_AT = 80;
 const CARD = 'rounded-[20px] border border-black/[0.06] bg-white';
-const LABEL = 'text-[10px] font-semibold uppercase tracking-[0.12em] text-[#8b969b]';
+const LABEL = 'text-[11px] font-semibold uppercase tracking-[0.10em] text-[#5b6a70]';
 /** Sheets must sit above the tab bar (z-10), which owns the bottom 82px. */
 const SCRIM = 'anim-fade absolute inset-0 z-40 bg-[rgba(11,20,24,.42)]';
 const SHEET = 'anim-sheet absolute inset-x-0 bottom-0 z-50 rounded-t-[30px] bg-canvas';
@@ -30,12 +30,12 @@ type Sheet = null | 'log' | 'tx' | 'cat' | 'import' | 'pool' | 'add';
 /** What to do with the expenses of a category being deleted. */
 type CatDelete = { count: number; mode: 'uncat' | 'move' | 'purge'; dest: string };
 
-const toCents = (s: string) => Math.round((parseFloat((s || '').replace(',', '.')) || 0) * 100);
+const toCents = (s: string) => parseMoney(s) ?? 0;
 const fromCents = (c: number) => (c ? String(c / 100) : '');
 const emptyDraft = (): Draft => ({ id: null, amount: '', cat: '', date: iso(new Date()), note: '', scope: 'mine', pct: 50 });
 
 export default function App() {
-  const { data, update, replace, reset, storage } = useLedger();
+  const { data, update, replace, reset, storage, storageError, recoveryNeeded } = useLedger();
   const [screen, setScreen] = useState<Screen>('home');
   const [ym, setYm] = useState<string>(ymNow());
   const [detail, setDetail] = useState<string | null>(null);
@@ -58,6 +58,7 @@ export default function App() {
   const [bring, setBring] = useState('');
 
   useEffect(() => { setFb(feedbackOn()); }, []);
+  useEffect(() => { if (data) document.documentElement.lang = data.lang; }, [data?.lang]);
 
   useEffect(() => {
     if (!toast) return;
@@ -66,6 +67,13 @@ export default function App() {
   }, [toast]);
 
   useEffect(() => { setCeilDraft(null); }, [ym]);
+  const [, refreshDay] = useState('');
+  useEffect(() => {
+    const refresh = () => refreshDay(iso(new Date()));
+    const timer = window.setInterval(refresh, 60000);
+    window.addEventListener('focus', refresh);
+    return () => { window.clearInterval(timer); window.removeEventListener('focus', refresh); };
+  }, []);
   // poolAt walks every month on record, so it must not run on every keystroke.
   const pool = useMemo(() => (data && data.onboarded ? poolAt(data, ym) : 0), [data, ym]);
   const sources = useMemo(() => (data && data.onboarded ? poolSources(data, ym) : { carried: 0, freed: 0, added: 0 }), [data, ym]);
@@ -127,9 +135,28 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [sheet]);
 
+  useEffect(() => {
+    if (!sheet) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    if (!dialog) return;
+    const focusable = () => Array.from(dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]')).filter(el => el.getClientRects().length > 0);
+    focusable()[0]?.focus();
+    const trap = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return;
+      const items = focusable();
+      const first = items[0], last = items[items.length - 1];
+      if (!first) { event.preventDefault(); return; }
+      if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', trap);
+    return () => { document.removeEventListener('keydown', trap); previous?.focus(); };
+  }, [sheet]);
+
   if (!data) return <main className='min-h-screen' />;
   const l: Ledger = data;
-  if (!l.onboarded) return <Onboarding update={update} />;
+  if (!l.onboarded) return <>{(storageError || recoveryNeeded) && <p role='alert' className='mx-auto max-w-[480px] bg-[#fff1f4] p-4 text-sm text-[#9b2440]'>{makeT(l.lang)(storageError ? 'storageError' : 'storageRecovered')}</p>}<Onboarding update={update} /></>;
 
   const t = makeT(l.lang);
   const lang: Lang = l.lang;
@@ -149,7 +176,7 @@ export default function App() {
     const target = virtual ? 0 : targetIn(l, ym, c.id);
     const sp = virtual ? orphans.reduce((a, t) => a + t.amount, 0) : spentBy(l, ym, c.id);
     // What this category costs the month, which is not the same as what was logged.
-    const cost = virtual ? sp : used(c.kind, target, sp);
+    const cost = virtual ? sp : c.kind === 'saving' ? potAt(l, c, ym).contribution : sp;
     const pot = c.kind === 'saving' && !virtual;
     const ps = pot ? potAt(l, c, ym) : null;
     const balance = ps ? ps.balance : 0;
@@ -182,8 +209,8 @@ export default function App() {
     // The number beside the name always means "what you still have", whatever
     // the kind. It used to mean the balance on a pot and the spend on
     // everything else, which read as the same thing and was not.
-    const headline = virtual ? sp : pot ? balance : target > 0 ? target - sp : sp;
-    const headlineWord = virtual || (!pot && target <= 0) ? t('spentWord') : pot ? t('balance') : t('leftWord');
+    const headline = virtual ? sp : pot ? balance : target > 0 ? Math.abs(target - sp) : sp;
+    const headlineWord = virtual || (!pot && target <= 0) ? t('spentWord') : pot ? t('balance') : over ? t('overBy') : t('leftWord');
     return {
       ...c, virtual, pot, target, spent: sp, cost, balance, st, meta, headline, headlineWord, over,
       goal, full: ps ? ps.full : false, freed: ps ? ps.freed : 0,
@@ -203,8 +230,9 @@ export default function App() {
   const fromPots = monthFromPots(l, ym);
   const alloc = l.cats.reduce((a, c) => a + targetIn(l, ym, c.id), 0);
   const ceiling = ceilingIn(l, ym);
-  const remaining = ceiling - spent - saved;
-  const varLeft = cats.filter((c) => c.kind === 'variable').reduce((a, c) => a + Math.max(0, c.target - c.spent), 0);
+  const daily = dailyBudget(l, ym);
+  const remaining = daily.remaining;
+  const released = monthFreed(l, ym);
   const monthTx = txOfMonth(l, ym).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : a.id < b.id ? 1 : -1));
 
   let acc = 0;
@@ -269,6 +297,7 @@ export default function App() {
 
   const saveCat = () => {
     if (!form.name.trim()) return;
+    if ((form.target && parseMoney(form.target) === null) || (form.goal && parseMoney(form.goal) === null)) { setToast(t('invalidAmount')); return; }
     const p = PALETTE[form.ci];
     update((d) => {
       const b = ensureMonth(d, ym);
@@ -297,6 +326,7 @@ export default function App() {
   /** Opens the delete panel, pre-answering the question when nothing depends on it. */
   const askDeleteCat = () => {
     if (!form.id) return;
+    if (l.tx.some(x => x.cat === form.id) || Object.values(l.months).some(b => (b.targets[form.id!] || 0) > 0 || b.extra?.some(e => e.to === form.id))) { setToast(t('historyDelete')); return; }
     const count = l.tx.filter((x) => x.cat === form.id).length;
     const dest = l.cats.find((c) => c.id !== form.id)?.id ?? '';
     tap('light');
@@ -338,7 +368,8 @@ export default function App() {
   const amountValue = parseFloat(draft.amount) || 0;
 
   const saveTx = () => {
-    if (amountValue <= 0) return;
+    if (amountValue <= 0 || parseMoney(draft.amount) === null) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(draft.date) || !Number.isFinite(new Date(draft.date).getTime()) || new Date(draft.date).toISOString().slice(0, 10) !== draft.date || draft.date > iso(new Date())) { setToast(t('invalidDate')); return; }
     const cat = l.cats.find((c) => c.id === draft.cat);
     if (!cat) return;
     const cents = Math.round(amountValue * 100);
@@ -405,7 +436,7 @@ export default function App() {
 
   const saveGive = () => {
     const entries = Object.entries(give).filter(([, n]) => n > 0);
-    if (!entries.length) return;
+    if (!entries.length || given > pool || entries.some(([id]) => !l.cats.some(c => c.id === id))) return;
     // Whatever the pot released this month is spent first, then the carried money.
     let freedLeft = sources.freed;
     update((d) => {
@@ -427,6 +458,7 @@ export default function App() {
   const doExport = async () => {
     tap('light');
     const result = await saveBackup(l);
+    if (result === 'cancelled') return;
     if (result === 'failed') { setToast(t('exportFailed')); return; }
     update((d) => { d.lastExport = new Date().toISOString(); });
     tap('confirm');
@@ -466,23 +498,19 @@ export default function App() {
   // Live impact of the draft on the chosen category, shown while typing.
   const draftCat = byId[draft.cat];
   const draftCents = Math.round(amountValue * 100);
-  const draftShare = draft.scope === 'split' ? Math.round((draftCents * draft.pct) / 100) : draftCents;
-  // What this expense does, said in the terms of the category it lands in.
+  const draftShare = draftCents;
+  // Preview the exact ledger that saving will produce, in the expense's month.
   const impact = (() => {
     if (!draftCat) return null;
-    const already = draft.id ? l.tx.find((x) => x.id === draft.id) : null;
-    // When editing, the row's own old amount must not count against itself.
-    const others = draftCat.spent - (already && already.cat === draftCat.id ? already.amount : 0);
-    if (draftCat.pot) {
-      const after = draftCat.balance + (already && already.cat === draftCat.id ? already.amount : 0) - draftShare;
-      return { over: after < 0, text: $(after) + ' ' + t('takeFromPot', { name: draftCat.name }) };
-    }
-    if (draftCat.target <= 0) return { over: false, text: t('noTargetYet', { name: draftCat.name }) };
-    const total = others + draftShare;
-    if (total > draftCat.target) {
-      return { over: true, text: t('willExceed', { name: draftCat.name, amount: $(total - draftCat.target) }) };
-    }
-    return { over: false, text: $(draftCat.target - total) + ' ' + t('leftAfter', { name: draftCat.name }) };
+    const month = ymOf(draft.date);
+    const preview = { ...l, tx: l.tx.filter(x => x.id !== draft.id) };
+    preview.tx = [...preview.tx, { id: 'preview', cat: draft.cat, amount: draftCents,
+      date: draft.date, note: '', scope: draft.scope, pct: draft.pct, paidBy: 'me', source: 'manual' }];
+    const target = targetIn(preview, month, draft.cat);
+    const after = draftCat.pot ? potAt(preview, draftCat, month).balance : target - spentBy(preview, month, draft.cat);
+    if (draftCat.pot) return { over: after < 0, text: $(after) + ' ' + t('takeFromPot', { name: draftCat.name }) };
+    if (target <= 0) return { over: false, text: t('noTargetYet', { name: draftCat.name }) };
+    return { over: after < 0, text: after < 0 ? t('willExceed', { name: draftCat.name, amount: $(-after) }) : $(after) + ' ' + t('leftAfter', { name: draftCat.name }) };
   })();
 
   const Row = ({ tx, showTile = true }: { tx: Tx; showTile?: boolean }) => {
@@ -492,7 +520,7 @@ export default function App() {
         {showTile && c && <Tile cat={c} size={34} />}
         <div className='min-w-0 flex-1'>
           <div className='truncate text-[13.5px] font-semibold text-ink'>{tx.note || (c ? c.name : '—')}</div>
-          <div className='mt-[3px] text-[11.5px] text-[#8b969b]'>
+          <div className='mt-[3px] text-[11.5px] text-[#63757d]'>
             {(c ? c.name : '—') + ' · ' + dayLabel(tx.date, lang) + (c && c.pot ? ' · ' + t('fromPot') : '') + (tx.scope === 'split' ? ' · ' + tx.pct + '/' + (100 - tx.pct) : '')}
           </div>
         </div>
@@ -504,7 +532,7 @@ export default function App() {
   const Empty = ({ title, body }: { title: string; body: string }) => (
     <div className='rounded-[22px] border border-dashed border-black/[0.12] px-6 py-10 text-center'>
       <div className='text-[15px] font-semibold text-ink'>{title}</div>
-      <div className='mx-auto mt-2 max-w-[240px] text-[13px] leading-relaxed text-[#8b969b]'>{body}</div>
+      <div className='mx-auto mt-2 max-w-[240px] text-[13px] leading-relaxed text-[#63757d]'>{body}</div>
     </div>
   );
 
@@ -531,19 +559,20 @@ export default function App() {
   return (
     <main className='mx-auto flex h-[100dvh] max-w-[430px] flex-col overflow-hidden bg-canvas shadow-[0_0_60px_-20px_rgba(18,48,58,.25)]'>
       <div className='relative min-h-0 flex-1'>
-        <div className='h-full overflow-y-auto overscroll-contain pb-[110px] pt-6'>
+        <div inert={sheet !== null} className='h-full overflow-y-auto overscroll-contain pb-[110px] pt-6'>
+          {(storageError || recoveryNeeded) && <button role='alert' onClick={() => go('me')} className='mx-4 mb-4 rounded-2xl bg-[#fff1f4] p-4 text-left text-sm text-[#9b2440]'>{t(storageError ? 'storageError' : 'storageRecovered')}</button>}
 
           {screen === 'home' && (
             <div className='px-[18px] pb-6'>
               <div className='mb-5 flex items-center justify-between'>
                 <div>
-                  <div className='text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8b969b]'>{l.workspace}</div>
+                  <div className='text-[11px] font-semibold uppercase tracking-[0.14em] text-[#63757d]'>{l.workspace}</div>
                   <div className='mt-1 text-2xl font-bold tracking-[-0.015em] text-ink'>{t('overview')}</div>
                 </div>
                 <div className='flex items-center gap-1 rounded-full border border-black/[0.08] bg-white px-1.5 py-1'>
-                  <button onClick={() => { tap('light'); setYm(shiftYm(ym, -1)); }} className='grid h-7 w-7 place-items-center text-[#5b6a70]'>‹</button>
+                  <button aria-label={t('previousMonth')} onClick={() => { tap('light'); setYm(shiftYm(ym, -1)); }} className='grid h-11 w-9 place-items-center text-[#5b6a70]'>‹</button>
                   <span className='px-1 text-[12px] font-semibold text-ink'>{ymLabel(ym, lang)}</span>
-                  <button onClick={() => { tap('light'); setYm(shiftYm(ym, 1)); }} className='grid h-7 w-7 place-items-center text-[#5b6a70]'>›</button>
+                  <button aria-label={t('nextMonth')} onClick={() => { tap('light'); setYm(shiftYm(ym, 1)); }} className='grid h-11 w-9 place-items-center text-[#5b6a70]'>›</button>
                 </div>
               </div>
 
@@ -558,12 +587,12 @@ export default function App() {
                       <div className='grid h-[78px] w-[78px] place-items-center rounded-full bg-deep text-center'>
                         <div>
                           <div className='font-mono text-[21px] tracking-tight'>{Math.round(((spent + saved) / ceiling) * 100)}%</div>
-                          <div className='mt-[5px] text-[8.5px] font-semibold uppercase tracking-[0.1em] text-white/50'>{t('spent')}</div>
+                          <div className='mt-[5px] text-[8.5px] font-semibold uppercase tracking-[0.1em] text-white/70'>{t('used')}</div>
                         </div>
                       </div>
                     </div>
                     <div className='min-w-0 flex-1'>
-                      <div className='text-[9.5px] font-semibold uppercase tracking-[0.1em] text-white/50'>{t('remaining')}</div>
+                      <div className='text-[9.5px] font-semibold uppercase tracking-[0.1em] text-white/70'>{t('remaining')}</div>
                       <div className='mt-1 font-mono text-[27px] tracking-[-0.03em]'>{$(remaining)}</div>
                     </div>
                   </div>
@@ -575,13 +604,14 @@ export default function App() {
                       ...(saved > 0 ? [[t('savedLabel'), $(saved), '#7fd9e6'] as const] : []),
                     ] as const).map(([label, value, colour]) => (
                       <div key={label} className='min-w-0 flex-1'>
-                        <div className='truncate text-[9.5px] font-semibold uppercase tracking-[0.1em] text-white/50'>{label}</div>
+                        <div className='truncate text-[9.5px] font-semibold uppercase tracking-[0.1em] text-white/70'>{label}</div>
                         <div className='mt-1 truncate font-mono text-sm' style={{ color: colour }}>{value}</div>
                       </div>
                     ))}
                   </div>
                   {/* Money out of a pot really was spent, but it was charged to the
                       months that saved it, so it sits outside the figures above. */}
+                  {released > 0 && <div className='mt-3 flex justify-between gap-3 text-xs text-white/80'><span>{t('poolReserved')}</span><span className='font-mono'>{$(released)}</span></div>}
                   {fromPots > 0 && (
                     <div className='mt-3.5 flex items-center justify-between border-t border-white/10 pt-3.5'>
                       <div className='text-[12.5px] text-white/60'>{t('fromSavings')}</div>
@@ -589,13 +619,30 @@ export default function App() {
                     </div>
                   )}
                   {m.isCurrent && (
-                    <div className='mt-3.5 flex items-center justify-between border-t border-white/10 pt-3.5'>
-                      <div className='text-[12.5px] text-white/60'>{t('safeDaily')}</div>
-                      <div className='font-mono text-[15px] text-[#7fd9e6]'>{$(Math.round(varLeft / m.daysLeft))}</div>
+                    <div className='mt-4 rounded-2xl bg-white/10 p-4'>
+                      <div className='text-sm text-white/80'>{t('safeDaily')}</div>
+                      <div className='mt-1 font-mono text-[32px] tracking-tight text-[#a4e8ed]'>{$(daily.daily ?? 0)}</div>
+                      <div className='mt-1 text-xs text-white/75'>{t('dailyFormula', { amount: $(daily.spendable), days: daily.days })}</div>
                     </div>
                   )}
                 </div>
               )}
+
+              {ceiling > 0 && m.isCurrent && (
+                <details className={CARD + ' mt-3 px-4 py-3 text-[13px] text-[#5b6a70]'}>
+                  <summary className='cursor-pointer font-semibold text-ink'>{t('dailyDetails')}</summary>
+                  <p className='mt-3 leading-relaxed'>{t('dailyHint')}</p>
+                  <dl className='my-3 space-y-2'>
+                    {[[t('remaining'), remaining], [t('reservedBills'), daily.reserved], [t('poolReserved'), released], [t('dailyAvailable'), daily.spendable]].map(([label, value]) => (
+                      <div key={String(label)} className='flex justify-between gap-3'><dt>{label}</dt><dd className='shrink-0 font-mono'>{$(Number(value))}</dd></div>
+                    ))}
+                  </dl>
+                  <p className='font-semibold text-ink'>{t('dailyFormula', { amount: $(daily.spendable), days: daily.days })}</p>
+                  <p className='mt-2 leading-relaxed'>{t('estimateNotice')}</p>
+                </details>
+              )}
+              {!m.isCurrent && <button onClick={() => setYm(ymNow())} className='mt-3 min-h-11 w-full rounded-xl bg-white text-sm font-semibold text-deep'>{t('currentMonth')}</button>}
+              {alloc > ceiling && <button onClick={() => go('budget')} className='mt-3 w-full rounded-2xl border border-[#d8365b]/25 bg-[#fff1f4] p-4 text-left text-sm text-[#9b2440]'><strong>{t('planOver', { amount: $(alloc - ceiling) })}</strong><span className='mt-1 block'>{t('planOverHelp')}</span></button>}
 
               {pool > 0 && (
                 <button
@@ -610,7 +657,7 @@ export default function App() {
                   </div>
                   <div className='min-w-0 flex-1'>
                     <div className='text-[13.5px] font-semibold text-ink'>{t('poolTitle', { amount: $(pool) })}</div>
-                    <div className='mt-0.5 truncate text-xs text-[#8b969b]'>
+                    <div className='mt-0.5 truncate text-xs text-[#63757d]'>
                       {[
                         sources.carried > 0 && t('poolFromCarry', { amount: $(sources.carried, false), month: ymLabel(shiftYm(ym, -1), lang) }),
                         sources.freed > 0 && t('poolFromFreed', { amount: $(sources.freed, false) }),
@@ -629,7 +676,7 @@ export default function App() {
                   </div>
                   <div className='flex-1'>
                     <div className='text-[13.5px] font-semibold text-ink'>{alert.title}</div>
-                    <div className='mt-0.5 text-xs text-[#8b969b]'>{alert.body}</div>
+                    <div className='mt-0.5 text-xs text-[#63757d]'>{alert.body}</div>
                   </div>
                   <div className='text-xs font-semibold text-[#0b7b8f]'>{t('rebalance')}</div>
                 </button>
@@ -637,7 +684,7 @@ export default function App() {
 
               <div className='mb-3 mt-[26px] flex items-baseline justify-between'>
                 <div className='text-[13px] font-bold text-ink'>{t('categories')}</div>
-                <div className='font-mono text-[11.5px] text-[#8b969b]'>{l.cats.length} {t('active')}</div>
+                <div className='font-mono text-[11.5px] text-[#63757d]'>{l.cats.length} {t('active')}</div>
               </div>
               {l.cats.length === 0 ? (
                 <button onClick={() => go('budget')} className='block w-full text-left'><Empty title={t('noCats')} body={t('noCatsBody')} /></button>
@@ -683,7 +730,7 @@ export default function App() {
           {screen === 'activity' && (
             <div className='px-[18px] pb-6'>
               <div className='mb-1 text-2xl font-bold tracking-[-0.015em] text-ink'>{t('activity')}</div>
-              <div className='mb-3 text-[13px] text-[#8b969b]'>{hits ? t('searchResults') : ymLabel(ym, lang)}</div>
+              <div className='mb-3 text-[13px] text-[#63757d]'>{hits ? t('searchResults') : ymLabel(ym, lang)}</div>
               <div className='relative mb-2.5'>
                 <input
                   value={query}
@@ -704,14 +751,14 @@ export default function App() {
                   ))}
                 </div>
               )}
-              <div className='mb-4 mt-2.5 font-mono text-[11.5px] text-[#8b969b]'>
+              <div className='mb-4 mt-2.5 font-mono text-[11.5px] text-[#63757d]'>
                 {nTx(filtered.length)} · {$(filtered.reduce((a, x) => a + x.amount, 0))}
               </div>
               {filtered.length === 0 ? <Empty title={t('noTx')} body={t('emptyBody')} /> : groupKeys.map((k) => (
                 <div key={k} className='mb-[18px]'>
                   <div className='mx-1 mb-2 flex items-baseline justify-between'>
-                    <div className='text-[11.5px] font-bold uppercase tracking-[0.06em] text-[#8b969b]'>{hits ? dayLabel(k, lang) + ' · ' + ymLabel(k.slice(0, 7), lang) : dayLabel(k, lang)}</div>
-                    <div className='font-mono text-[11.5px] text-[#8b969b]'>{$(groupMap[k].reduce((a, x) => a + x.amount, 0))}</div>
+                    <div className='text-[11.5px] font-bold uppercase tracking-[0.06em] text-[#63757d]'>{hits ? dayLabel(k, lang) + ' · ' + ymLabel(k.slice(0, 7), lang) : dayLabel(k, lang)}</div>
+                    <div className='font-mono text-[11.5px] text-[#63757d]'>{$(groupMap[k].reduce((a, x) => a + x.amount, 0))}</div>
                   </div>
                   <div className={CARD + ' overflow-hidden'}>{groupMap[k].map((x) => <Row key={x.id} tx={x} />)}</div>
                 </div>
@@ -723,13 +770,13 @@ export default function App() {
             <div className='px-[18px] pb-6'>
               <div className='text-2xl font-bold tracking-[-0.015em] text-ink'>{t('budget')}</div>
               <div className='mb-4 mt-1 flex items-center gap-2'>
-                <button onClick={() => { tap('light'); setYm(shiftYm(ym, -1)); }} className='grid h-7 w-7 place-items-center rounded-full bg-white text-[#5b6a70] border border-black/[0.08]'>‹</button>
+                <button aria-label={t('previousMonth')} onClick={() => { tap('light'); setYm(shiftYm(ym, -1)); }} className='grid h-11 w-9 place-items-center rounded-full bg-white text-[#5b6a70] border border-black/[0.08]'>‹</button>
                 <span className='text-[13px] font-semibold text-ink'>{ymLabel(ym, lang)}</span>
-                <button onClick={() => { tap('light'); setYm(shiftYm(ym, 1)); }} className='grid h-7 w-7 place-items-center rounded-full bg-white text-[#5b6a70] border border-black/[0.08]'>›</button>
-                <span className='ml-auto text-[11px] text-[#8b969b]'>{t('perMonth')}</span>
+                <button aria-label={t('nextMonth')} onClick={() => { tap('light'); setYm(shiftYm(ym, 1)); }} className='grid h-11 w-9 place-items-center rounded-full bg-white text-[#5b6a70] border border-black/[0.08]'>›</button>
+                <span className='ml-auto text-[11px] text-[#63757d]'>{t('perMonth')}</span>
               </div>
               {!l.months[ym] && ceiling > 0 && (
-                <div className='mb-4 rounded-[16px] border border-black/[0.06] bg-white px-3.5 py-3 text-[11.5px] leading-relaxed text-[#8b969b]'>
+                <div className='mb-4 rounded-[16px] border border-black/[0.06] bg-white px-3.5 py-3 text-[11.5px] leading-relaxed text-[#63757d]'>
                   {t('copiedFromPrev')}
                 </div>
               )}
@@ -737,16 +784,14 @@ export default function App() {
               <div className={CARD + ' rounded-[22px] p-[18px]'}>
                 <div className={LABEL}>{t('monthlyCeiling')}</div>
                 <div className='my-3 flex items-center gap-2 rounded-2xl bg-canvas px-4 py-3'>
-                  <span className='font-mono text-[24px] text-[#8b969b]'>€</span>
+                  <span className='font-mono text-[24px] text-[#63757d]'>€</span>
                   <input
                     value={ceilDraft ?? fromCents(mb.ceiling)}
                     onChange={(e) => {
-                      const raw = e.target.value.replace(/[^0-9.,]/g, '');
+                      const raw = e.target.value;
                       setCeilDraft(raw);
-                      const v = toCents(raw);
-                      update((d) => { ensureMonth(d, ym).ceiling = v; });
                     }}
-                    onBlur={() => setCeilDraft(null)}
+                    onBlur={() => { if (ceilDraft === null) return; const value = parseMoney(ceilDraft || '0'); if (value === null) { setToast(t('invalidAmount')); return; } update(d => { ensureMonth(d, ym).ceiling = value; }); setCeilDraft(null); }}
                     inputMode='decimal'
                     placeholder='0'
                     aria-label={t('monthlyCeiling')}
@@ -763,11 +808,11 @@ export default function App() {
                     {distributed(l, ym) > 0 && (
                       <div className='mb-2 flex justify-between font-mono text-[11.5px]'>
                         <span className='text-[#0b7b8f]'>{t('extraInMonth', { amount: $(distributed(l, ym), false) })}</span>
-                        <span className='text-[#8b969b]'>{t('extraOrigin')}</span>
+                        <span className='text-[#63757d]'>{t('extraOrigin')}</span>
                       </div>
                     )}
                     <div className='flex justify-between font-mono text-[11.5px]'>
-                      <span className='text-[#8b969b]'>{$(alloc, false)} {t('allocated')}</span>
+                      <span className='text-[#63757d]'>{$(alloc, false)} {t('allocated')}</span>
                       <span style={{ color: alloc > ceiling ? '#d8365b' : alloc < ceiling ? '#c8722a' : '#0b7b8f' }}>
                         {alloc === ceiling ? t('fullyAllocated') : alloc > ceiling ? $(alloc - ceiling, false) + ' ' + t('overCeiling') : $(ceiling - alloc, false) + ' ' + t('unallocated')}
                       </span>
@@ -783,7 +828,7 @@ export default function App() {
                 </div>
                 <div className='min-w-0 flex-1'>
                   <div className='text-[13px] font-semibold text-ink'>{t('addMoney')}</div>
-                  <div className='mt-0.5 text-[11.5px] leading-snug text-[#8b969b]'>{t('addMoneyBody')}</div>
+                  <div className='mt-0.5 text-[11.5px] leading-snug text-[#63757d]'>{t('addMoneyBody')}</div>
                 </div>
               </button>
 
@@ -795,12 +840,12 @@ export default function App() {
                       <Tile cat={c} size={34} />
                       <div className='min-w-0 flex-1'>
                         <div className='truncate text-[13.5px] font-semibold text-ink'>{c.name}</div>
-                        <div className='mt-[3px] text-[11px] text-[#8b969b]'>{kindLabel(c.kind)}{ceiling > 0 && c.target > 0 ? ' · ' + Math.round((c.target / ceiling) * 100) + '%' : ''}</div>
+                        <div className='mt-[3px] text-[11px] text-[#63757d]'>{kindLabel(c.kind)}{ceiling > 0 && c.target > 0 ? ' · ' + Math.round((c.target / ceiling) * 100) + '%' : ''}</div>
                       </div>
                       <div className='shrink-0 font-mono text-[15px] text-ink'>{$(c.target, false)}</div>
                     </button>
                     <input
-                      type='range' min={0} max={Math.max(ceiling || 200000, c.target)} step={500} value={c.target}
+                      type='range' min={0} max={Math.max(ceiling || 200000, c.target)} step={100} aria-label={t('adjustTarget') + ': ' + c.name} value={mb.targets[c.id] || 0}
                       onChange={(e) => { const v = parseInt(e.target.value, 10); update((d) => { ensureMonth(d, ym).targets[c.id] = v; }); }}
                       className='mt-3 w-full' style={{ accentColor: c.c }}
                     />
@@ -835,7 +880,7 @@ export default function App() {
                 <Tile cat={detCat} size={54} />
                 <div>
                   <div className='text-[21px] font-bold tracking-[-0.01em] text-ink'>{detCat.name}</div>
-                  <div className='mt-[5px] text-[12.5px] text-[#8b969b]'>{detCat.virtual ? '' : kindLabel(detCat.kind) + ' · '}{nTx(detTx.length)}</div>
+                  <div className='mt-[5px] text-[12.5px] text-[#63757d]'>{detCat.virtual ? '' : kindLabel(detCat.kind) + ' · '}{nTx(detTx.length)}</div>
                 </div>
               </div>
               <div className={CARD + ' rounded-[22px] p-[18px]'}>
@@ -919,7 +964,7 @@ export default function App() {
                 </div>
                 <div className={LABEL + ' mt-5'}>{t('sharingLabel')}</div>
                 <div className='mt-2.5 flex items-center gap-3'>
-                  <div className='flex-1 text-[12px] leading-snug text-[#8b969b]'>{t('sharingBody')}</div>
+                  <div className='flex-1 text-[12px] leading-snug text-[#63757d]'>{t('sharingBody')}</div>
                   <button
                     onClick={() => { const v = !sharing; tap('light'); update((d) => { d.splits = v; }); }}
                     aria-pressed={sharing}
@@ -931,7 +976,7 @@ export default function App() {
                 </div>
                 <div className={LABEL + ' mt-5'}>{t('feedback')}</div>
                 <div className='mt-2.5 flex items-center gap-3'>
-                  <div className='flex-1 text-[12px] leading-snug text-[#8b969b]'>{t('feedbackBody')}</div>
+                  <div className='flex-1 text-[12px] leading-snug text-[#63757d]'>{t('feedbackBody')}</div>
                   <button
                     onClick={() => { const v = !fb; setFeedback(v); setFb(v); if (v) tap('confirm'); }}
                     className='relative h-[32px] w-[56px] shrink-0 rounded-full transition-colors'
@@ -945,7 +990,7 @@ export default function App() {
               {sharing && <div className='mt-2.5 rounded-[22px] bg-deep p-[18px] text-white'>
                 <div className='flex items-end justify-between'>
                   <div>
-                    <div className='text-[9.5px] font-semibold uppercase tracking-[0.11em] text-white/50'>{t('unsettledTitle')}</div>
+                    <div className='text-[9.5px] font-semibold uppercase tracking-[0.11em] text-white/70'>{t('unsettledTitle')}</div>
                     <div className='mt-[7px] font-mono text-[26px] tracking-[-0.03em]'>{$(unsettled(l, ym))}</div>
                   </div>
                   <div className='max-w-[140px] text-right text-[11.5px] text-white/55'>{t('unsettledBody')}</div>
@@ -975,7 +1020,7 @@ export default function App() {
                 {!storage.standalone && (
                   <div className='mt-4 rounded-[16px] bg-canvas p-3.5'>
                     <div className='text-[12.5px] font-semibold text-ink'>{t('installTitle')}</div>
-                    <div className='mt-1 text-[11.5px] leading-relaxed text-[#8b969b]'>{installer ? t('installAndroid') : t('installIos')}</div>
+                    <div className='mt-1 text-[11.5px] leading-relaxed text-[#63757d]'>{installer ? t('installAndroid') : t('installIos')}</div>
                     {installer && (
                       <button
                         onClick={async () => { tap('light'); try { await installer.prompt(); } catch {} setInstaller(null); }}
@@ -1024,9 +1069,9 @@ export default function App() {
                     </div>
                     <div className='flex-1'>
                       <div className='text-sm font-semibold text-ink'>{x.t}</div>
-                      <div className='mt-[3px] text-xs text-[#8b969b]'>{x.s}</div>
+                      <div className='mt-[3px] text-xs text-[#63757d]'>{x.s}</div>
                     </div>
-                    <div className='flex h-6 items-center rounded-lg bg-canvas px-2.5 font-mono text-[10px] font-semibold text-[#8b969b]'>{x.p}</div>
+                    <div className='flex h-6 items-center rounded-lg bg-canvas px-2.5 font-mono text-[10px] font-semibold text-[#63757d]'>{x.p}</div>
                   </div>
                 ))}
               </div>
@@ -1034,7 +1079,7 @@ export default function App() {
               <button onClick={() => { if (confirm(t('resetBody'))) { reset(); } }} className={CARD + ' mt-6 flex w-full items-center justify-between p-4 text-left'}>
                 <div>
                   <div className='text-sm font-semibold text-ink'>{t('resetData')}</div>
-                  <div className='mt-[3px] text-xs text-[#8b969b]'>{t('resetBody')}</div>
+                  <div className='mt-[3px] text-xs text-[#63757d]'>{t('resetBody')}</div>
                 </div>
                 <div className='text-[12.5px] font-semibold text-[#ec6a86]'>{t('erase')}</div>
               </button>
@@ -1043,7 +1088,7 @@ export default function App() {
         </div>
 
         {toast && (
-          <div className='anim-toast absolute bottom-[100px] left-4 right-4 z-30 flex items-center gap-3 rounded-2xl bg-deep px-4 py-3.5 shadow-[0_14px_28px_-14px_rgba(18,48,58,.8)]'>
+          <div role='status' className='anim-toast absolute bottom-[100px] left-4 right-4 z-30 flex items-center gap-3 rounded-2xl bg-deep px-4 py-3.5 shadow-[0_14px_28px_-14px_rgba(18,48,58,.8)]'>
             <div className='grid h-5 w-5 shrink-0 place-items-center rounded-full bg-[#7fd9e6]'>
               <div className='-mt-0.5 h-1 w-2 -rotate-45 border-b-2 border-l-2 border-deep' />
             </div>
@@ -1100,7 +1145,7 @@ export default function App() {
                     const v = iso(dd);
                     return <button key={off} onClick={() => { tap('light'); setDraft((x) => ({ ...x, date: v })); }} className={'flex h-10 items-center rounded-xl border border-black/[0.07] px-3.5 text-[12.5px] font-semibold ' + chip(draft.date === v)}>{off === 0 ? t('today') : t('yesterday')}</button>;
                   })}
-                  <input type='date' value={draft.date} max={iso(new Date())} onChange={(e) => { if (e.target.value) setDraft((d) => ({ ...d, date: e.target.value })); }} className='h-10 flex-1 rounded-xl border border-black/[0.07] bg-white px-2.5 font-mono text-[12.5px] text-ink outline-none' />
+                  <input aria-label={t('today')} type='date' value={draft.date} max={iso(new Date())} onChange={(e) => { if (e.target.value) setDraft((d) => ({ ...d, date: e.target.value })); }} className='h-10 flex-1 rounded-xl border border-black/[0.07] bg-white px-2.5 font-mono text-[12.5px] text-ink outline-none' />
                 </div>
 
                 {sharing && <div className={LABEL + ' mb-2 mt-3'}>{t('splitLabel')}</div>}
@@ -1110,6 +1155,7 @@ export default function App() {
                     return <button key={k} onClick={() => { tap('light'); setDraft((d) => (k === 'mine' ? { ...d, scope: 'mine' } : { ...d, scope: 'split', pct: k === 'half' ? 50 : d.pct === 50 ? 60 : d.pct })); }} className={'h-10 flex-1 rounded-xl border border-black/[0.07] text-[12.5px] font-semibold ' + chip(on)}>{label}</button>;
                   })}
                 </div>}
+                {sharing && draft.scope === 'split' && <p className='mt-2 text-xs leading-relaxed text-[#5b6a70]'>{t('grossSplit')}</p>}
                 {sharing && draft.scope === 'split' && (
                   <div className='mt-2 flex items-center gap-3 rounded-2xl border border-black/[0.06] bg-white p-3'>
                     <button onClick={() => { tap('light'); setDraft((d) => ({ ...d, pct: Math.max(0, d.pct - 5) })); }} aria-label='−5%' className='grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-canvas'>
@@ -1117,7 +1163,7 @@ export default function App() {
                     </button>
                     <div className='flex-1 text-center'>
                       <div className='font-mono text-[13px] text-ink'>{t('you')} {draft.pct}% · {t('partner')} {100 - draft.pct}%</div>
-                      <div className='mt-1.5 text-[10.5px] text-[#8b969b]'>{$(draftShare)} {t('countsAgainst')}</div>
+                      <div className='mt-1.5 text-[10.5px] text-[#63757d]'>{$(draftShare)} {t('countsAgainst')}</div>
                     </div>
                     <button onClick={() => { tap('light'); setDraft((d) => ({ ...d, pct: Math.min(100, d.pct + 5) })); }} aria-label='+5%' className='relative grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-canvas'>
                       <div className='absolute h-[2.5px] w-2.5 rounded-sm bg-ink' />
@@ -1127,7 +1173,7 @@ export default function App() {
                 )}
 
                 <div className={LABEL + ' mb-2 mt-3'}>{t('noteLabel')}</div>
-                <input value={draft.note} onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} placeholder={draftCat ? draftCat.name : t('note')} className='mb-1 h-11 w-full rounded-xl border border-black/[0.07] bg-white px-3.5 text-[13.5px] text-ink outline-none' />
+                <input aria-label={t('note')} value={draft.note} onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} placeholder={draftCat ? draftCat.name : t('note')} className='mb-1 h-11 w-full rounded-xl border border-black/[0.07] bg-white px-3.5 text-[13.5px] text-ink outline-none' />
               </div>
 
               <div className='shrink-0 border-t border-black/[0.06] bg-canvas px-[18px] pt-3' style={{ paddingBottom: 'calc(18px + env(safe-area-inset-bottom))' }}>
@@ -1156,13 +1202,13 @@ export default function App() {
           return (
             <>
               <div className={SCRIM} onClick={closeSheet} />
-              <div role='dialog' aria-modal='true' className={SHEET + ' px-[18px] pt-2.5'} style={{ paddingBottom: 'calc(24px + env(safe-area-inset-bottom))' }}>
+              <div role='dialog' aria-modal='true' aria-label={t('budget')} className={SHEET + ' px-[18px] pt-2.5'} style={{ paddingBottom: 'calc(24px + env(safe-area-inset-bottom))' }}>
                 <div className='mx-auto mb-[18px] mt-0.5 h-1 w-[38px] rounded-full bg-black/15' />
                 <div className='mb-5 flex items-center gap-3.5'>
                   {c && <Tile cat={c} size={46} />}
                   <div className='flex-1'>
                     <div className='text-[17px] font-bold text-ink'>{x.note}</div>
-                    <div className='mt-1 text-[12.5px] text-[#8b969b]'>{(c ? c.name : '') + ' · ' + dayLabel(x.date, lang) + ' · ' + (x.scope === 'split' ? x.pct + '/' + (100 - x.pct) : t('justMe'))}</div>
+                    <div className='mt-1 text-[12.5px] text-[#63757d]'>{(c ? c.name : '') + ' · ' + dayLabel(x.date, lang) + ' · ' + (x.scope === 'split' ? x.pct + '/' + (100 - x.pct) : t('justMe'))}</div>
                   </div>
                   <div className='font-mono text-2xl tracking-[-0.02em] text-ink'>{$(x.amount)}</div>
                 </div>
@@ -1199,34 +1245,35 @@ export default function App() {
         {sheet === 'cat' && (
           <>
             <div className={SCRIM} onClick={closeSheet} />
-            <div role='dialog' aria-modal='true' className={SHEET + ' max-h-full overflow-y-auto px-[18px] pt-2.5'} style={{ paddingBottom: 'calc(24px + env(safe-area-inset-bottom))' }}>
+            <div role='dialog' aria-modal='true' aria-label={t('budget')} className={SHEET + ' max-h-full overflow-y-auto px-[18px] pt-2.5'} style={{ paddingBottom: 'calc(24px + env(safe-area-inset-bottom))' }}>
               <div className='mx-auto mb-3.5 mt-0.5 h-1 w-[38px] rounded-full bg-black/15' />
               <div className='mb-4 flex items-center justify-between'>
                 <div className='text-[17px] font-bold text-ink'>{form.id ? t('editCategory') : t('newCategory')}</div>
                 <button onClick={closeSheet} aria-label={t('close')} className='grid h-[30px] w-[30px] place-items-center rounded-full bg-black/[0.06] text-[#5b6a70]'>✕</button>
               </div>
-              <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={t('name')} className='mb-2.5 h-[46px] w-full rounded-2xl bg-white px-3.5 text-[14.5px] font-medium text-ink outline-none' />
+              <input aria-label={t('name')} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={t('name')} className='mb-2.5 h-[46px] w-full rounded-2xl bg-white px-3.5 text-[14.5px] font-medium text-ink outline-none' />
               <div className='mb-2.5 flex gap-2.5'>
                 <div className='flex h-[46px] flex-1 items-center gap-1 rounded-2xl bg-white px-3.5'>
-                  <span className='font-mono text-[14px] text-[#8b969b]'>€</span>
+                  <span className='font-mono text-[14px] text-[#63757d]'>€</span>
                   <input value={form.target} onChange={(e) => setForm({ ...form, target: e.target.value.replace(/[^0-9.,]/g, '') })} inputMode='decimal' placeholder={form.kind === 'saving' ? t('perMonthAmount') : t('target')} aria-label={form.kind === 'saving' ? t('perMonthAmount') : t('target')} className='w-full bg-transparent font-mono text-[14.5px] text-ink outline-none' />
                 </div>
                 {/* A goal only means something for a pot, so it only appears for one. */}
                 {form.kind === 'saving' && (
                   <div className='flex h-[46px] flex-1 items-center gap-1 rounded-2xl bg-white px-3.5'>
-                    <span className='font-mono text-[14px] text-[#8b969b]'>€</span>
+                    <span className='font-mono text-[14px] text-[#63757d]'>€</span>
                     <input value={form.goal} onChange={(e) => setForm({ ...form, goal: e.target.value.replace(/[^0-9.,]/g, '') })} inputMode='decimal' placeholder={t('goalOptional')} aria-label={t('goalLabel')} className='w-full bg-transparent font-mono text-[14.5px] text-ink outline-none' />
                   </div>
                 )}
               </div>
               <div className='flex gap-2'>
                 {([['variable', t('variable')], ['fixed', t('fixed')], ['saving', t('saving')]] as const).map(([k, label]) => (
-                  <button key={k} onClick={() => { tap('light'); setForm({ ...form, kind: k as Kind }); }} className={'h-[46px] flex-1 rounded-2xl text-[13px] font-semibold ' + chip(form.kind === k)}>{label}</button>
+                  <button key={k} disabled={!!form.id && (l.tx.some(x => x.cat === form.id) || Object.values(l.months).some(b => (b.targets[form.id!] || 0) > 0 || b.extra?.some(e => e.to === form.id)))} onClick={() => { tap('light'); setForm({ ...form, kind: k as Kind }); }} className={'h-[46px] flex-1 rounded-2xl text-[13px] font-semibold ' + chip(form.kind === k)}>{label}</button>
                 ))}
               </div>
               {/* One line, only for what is selected: the three kinds are the one
                   thing in here a newcomer cannot guess. */}
-              <div className='mb-3.5 mt-2 px-1 text-[11.5px] leading-relaxed text-[#8b969b]'>
+              <div className='mb-3.5 mt-2 px-1 text-[11.5px] leading-relaxed text-[#63757d]'>
+                {form.id && (l.tx.some(x => x.cat === form.id) || Object.values(l.months).some(b => (b.targets[form.id!] || 0) > 0 || b.extra?.some(e => e.to === form.id))) && <p className='mb-2'>{t('historyKind')}</p>}
                 {form.kind === 'variable' ? t('kindVariableHelp') : form.kind === 'fixed' ? t('kindFixedHelp') : t('kindSavingHelp')}
               </div>
               <div className='mb-2 flex gap-2.5'>
@@ -1263,7 +1310,7 @@ export default function App() {
                   {catDel.count > 0 ? (
                     <>
                       <div className='text-[13.5px] font-semibold text-ink'>{catDel.count === 1 ? t('catInUseOne') : t('catInUseTitle', { n: catDel.count })}</div>
-                      <div className='mt-1 text-[12px] text-[#8b969b]'>{t('catInUseBody')}</div>
+                      <div className='mt-1 text-[12px] text-[#63757d]'>{t('catInUseBody')}</div>
                       <div className='mt-3 flex flex-col gap-2'>
                         {catDel.dest && (
                           <label className='flex items-center gap-2.5 rounded-xl bg-canvas px-3 py-2.5'>
@@ -1306,12 +1353,12 @@ export default function App() {
         {sheet === 'add' && (
           <>
             <div className={SCRIM} onClick={closeSheet} />
-            <div role='dialog' aria-modal='true' className={SHEET + ' px-[18px] pt-2.5'} style={{ paddingBottom: 'calc(24px + env(safe-area-inset-bottom))' }}>
+            <div role='dialog' aria-modal='true' aria-label={t('budget')} className={SHEET + ' px-[18px] pt-2.5'} style={{ paddingBottom: 'calc(24px + env(safe-area-inset-bottom))' }}>
               <div className='mx-auto mb-3.5 mt-0.5 h-1 w-[38px] rounded-full bg-black/15' />
               <div className='text-[17px] font-bold text-ink'>{t('addMoney')}</div>
-              <div className='mt-1.5 text-[12.5px] leading-relaxed text-[#8b969b]'>{t('addMoneyBody')}</div>
+              <div className='mt-1.5 text-[12.5px] leading-relaxed text-[#63757d]'>{t('addMoneyBody')}</div>
               <div className='my-4 flex items-center gap-2 rounded-2xl bg-white px-4 py-3'>
-                <span className='font-mono text-[24px] text-[#8b969b]'>€</span>
+                <span className='font-mono text-[24px] text-[#63757d]'>€</span>
                 <input
                   value={bring}
                   onChange={(e) => setBring(e.target.value.replace(/[^0-9.,]/g, ''))}
@@ -1343,8 +1390,8 @@ export default function App() {
                   <div key={left} className='anim-bump font-mono text-[26px] tracking-[-0.03em]' style={{ color: left === 0 ? '#0b7b8f' : '#16242a' }}>{$(left)}</div>
                 </div>
                 <div className='mt-0.5 flex items-baseline justify-between'>
-                  <div className='text-[11.5px] text-[#8b969b]'>{t('giveAll')}</div>
-                  <div className='text-[11px] text-[#8b969b]'>{t('stillToPlace')}</div>
+                  <div className='text-[11.5px] text-[#63757d]'>{t('giveAll')}</div>
+                  <div className='text-[11px] text-[#63757d]'>{t('stillToPlace')}</div>
                 </div>
               </div>
 
@@ -1389,10 +1436,10 @@ export default function App() {
         {sheet === 'import' && incoming && (
           <>
             <div className={SCRIM} onClick={closeSheet} />
-            <div role='dialog' aria-modal='true' className={SHEET + ' px-[18px] pt-2.5'} style={{ paddingBottom: 'calc(24px + env(safe-area-inset-bottom))' }}>
+            <div role='dialog' aria-modal='true' aria-label={t('budget')} className={SHEET + ' px-[18px] pt-2.5'} style={{ paddingBottom: 'calc(24px + env(safe-area-inset-bottom))' }}>
               <div className='mx-auto mb-3.5 mt-0.5 h-1 w-[38px] rounded-full bg-black/15' />
               <div className='text-[17px] font-bold text-ink'>{t('importTitle')}</div>
-              <div className='mt-1.5 text-[12.5px] leading-relaxed text-[#8b969b]'>{t('importBody')}</div>
+              <div className='mt-1.5 text-[12.5px] leading-relaxed text-[#63757d]'>{t('importBody')}</div>
               <div className='mt-4 rounded-[18px] border border-black/[0.06] bg-white p-4'>
                 <div className='text-[14px] font-semibold text-ink'>{incoming.summary.workspace || '—'}</div>
                 <div className='mt-1.5 font-mono text-[12px] text-[#5b6a70]'>
@@ -1403,7 +1450,7 @@ export default function App() {
                   ].join(' · ')}
                 </div>
                 {incoming.summary.from && incoming.summary.to && (
-                  <div className='mt-1 font-mono text-[11.5px] text-[#8b969b]'>
+                  <div className='mt-1 font-mono text-[11.5px] text-[#63757d]'>
                     {t('importRange', { from: incoming.summary.from, to: incoming.summary.to })}
                   </div>
                 )}
@@ -1416,12 +1463,12 @@ export default function App() {
           </>
         )}
 
-        <nav className='absolute inset-x-0 bottom-0 z-10 flex h-[82px] items-start border-t border-black/[0.07] bg-white/95 px-2 pt-2.5 backdrop-blur-xl' style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+        <nav inert={sheet !== null} aria-label={t('overview')} className='absolute inset-x-0 bottom-0 z-10 flex h-[82px] items-start border-t border-black/[0.07] bg-white/95 px-2 pt-2.5 backdrop-blur-xl' style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
           {([['home', t('overview')], ['activity', t('activity')], ['spacer', ''], ['budget', t('budget')], ['me', t('account')]] as const).map(([k, label]) =>
             k === 'spacer' ? (
               <div key='spacer' className='flex-1' />
             ) : (
-              <button key={k} onClick={() => go(k as Screen)} className='flex flex-1 flex-col items-center gap-1.5 pt-1.5'>
+              <button key={k} aria-current={screen === k ? 'page' : undefined} onClick={() => go(k as Screen)} className='flex flex-1 flex-col items-center gap-1.5 pt-1.5'>
                 <TabIcon kind={k === 'me' ? 'me' : (k as 'home' | 'activity' | 'budget')} on={screen === k || (k === 'home' && screen === 'detail')} />
                 <div className='text-[9.5px] font-semibold' style={{ color: screen === k || (k === 'home' && screen === 'detail') ? '#12303a' : '#a8b2b6' }}>{label}</div>
               </button>

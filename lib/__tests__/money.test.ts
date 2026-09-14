@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  MARKS, STARTERS, catHistory, catState, makeCategory, monthFreed, monthFromPots, monthSaved, monthSpent, monthUsed,
+  dailyBudget, spendingRoom, monthMeta, MARKS, STARTERS, catHistory, catState, makeCategory, monthFreed, monthFromPots, monthSaved, monthSpent, monthUsed,
   addedIn, ceilingIn, distributed, leftoverOf, makeExtra, monthsToGoal, monthsUpTo, poolAt, poolSources, potAt, targetIn, potBalance, searchTx, shiftYm, splitsOn, unsettled, used, ymOf,
 } from '../data.ts';
-import { money } from '../format.ts';
+import { money, parseMoney } from '../format.ts';
 import type { Kind, Ledger, Tx } from '../types.ts';
 
 const tx = (over: Partial<Tx> & Pick<Tx, 'id' | 'cat' | 'amount' | 'date'>): Tx => ({
@@ -166,7 +166,7 @@ test('monthsUpTo: is inclusive and ordered, and capped against runaway data', ()
   const l = ledger({ months: { '2026-07': { ceiling: 0, targets: {} } } });
   assert.deepEqual(monthsUpTo(l, '2026-09'), ['2026-07', '2026-08', '2026-09']);
   assert.deepEqual(monthsUpTo(l, '2026-07'), ['2026-07']);
-  assert.equal(monthsUpTo(l, '2026-06').length, 1, 'a month before any record is just itself');
+  assert.equal(monthsUpTo(l, '2026-06').length, 0, 'no fabricated history before the first record');
   assert.equal(monthsUpTo(ledger({ months: { '1900-01': { ceiling: 0, targets: {} } } }), '2026-09', 12).length, 12);
 });
 
@@ -646,4 +646,76 @@ test('monthFromPots: reports what came out of pots, apart from the budget', () =
 test('monthFromPots: is zero when nothing came out', () => {
   const l = ledger({ cats: [pot('p')], months: everyMonth(['2026-09'], { p: 10000 }) });
   assert.equal(monthFromPots(l, '2026-09'), 0);
+});
+
+
+const september = new Date(2026, 8, 14, 12);
+const dailyLedger = () => ledger({
+  cats: [cat('rent', 'fixed'), cat('food', 'variable'), cat('fun', 'variable'), cat('pot', 'saving')],
+  months: { '2026-09': { ceiling: 150000, targets: { rent: 80000, food: 30000, fun: 20000, pot: 20000 } } },
+});
+test('daily: unpaid rent and saving are reserved; paying rent does not change daily room', () => {
+  const l = dailyLedger();
+  const before = dailyBudget(l, '2026-09', september);
+  assert.equal(before.spendable, 50000);
+  assert.equal(before.daily, 2941);
+  l.tx.push(tx({ id: 'rent', cat: 'rent', amount: 80000, date: '2026-09-14' }));
+  assert.equal(dailyBudget(l, '2026-09', september).daily, before.daily);
+});
+test('daily: an overspent category reduces the other categories headroom', () => {
+  const l = dailyLedger();
+  l.tx.push(tx({ id: 'food', cat: 'food', amount: 40000, date: '2026-09-14' }));
+  assert.equal(dailyBudget(l, '2026-09', september).spendable, 10000);
+});
+test('daily: fixed overspending and orphan expenses also reduce available money', () => {
+  const l = dailyLedger();
+  l.tx.push(tx({ id: 'rent', cat: 'rent', amount: 100000, date: '2026-09-14' }), tx({ id: 'orphan', cat: 'gone', amount: 5000, date: '2026-09-14' }));
+  assert.equal(dailyBudget(l, '2026-09', september).spendable, 25000);
+});
+test('daily: overallocated plans never authorize spending above the monthly limit', () => {
+  const l = dailyLedger();
+  l.months['2026-09'].ceiling = 110000;
+  assert.equal(dailyBudget(l, '2026-09', september).spendable, 10000);
+  l.months['2026-09'].ceiling = 90000;
+  assert.equal(dailyBudget(l, '2026-09', september).daily, 0);
+});
+test('daily: past and future months have no today estimate, month ends and leap years are correct', () => {
+  const l = dailyLedger();
+  assert.equal(dailyBudget(l, '2026-08', september).daily, null);
+  assert.equal(dailyBudget(l, '2026-10', september).daily, null);
+  assert.equal(monthMeta('2026-08', september).daysLeft, 0);
+  assert.equal(monthMeta('2026-10', september).daysLeft, 31);
+  assert.equal(monthMeta('2028-02', new Date(2028, 1, 28)).daysLeft, 2);
+  assert.equal(dailyBudget(l, '2026-09', new Date(2026, 8, 30)).daily, 50000);
+});
+test('daily: rounding down never promises more than the remaining budget', () => {
+  const l = dailyLedger();
+  for (let day = 1; day <= 30; day++) {
+    const d = dailyBudget(l, '2026-09', new Date(2026, 8, day));
+    assert.ok(d.daily! * d.days <= d.spendable);
+  }
+});
+test('released savings: distributing a full pots contribution does not create money', () => {
+  const l = ledger({ cats: [pot('p', 10000), cat('food', 'variable')], months: {
+    '2026-08': { ceiling: 10000, targets: { p: 10000 } },
+    '2026-09': { ceiling: 50000, targets: { p: 10000, food: 40000 } },
+  } });
+  const before = spendingRoom(l, '2026-09').remaining + poolAt(l, '2026-09');
+  assert.equal(before, 50000);
+  l.months['2026-09'].extra = [makeExtra('freed', 'food', 10000)];
+  assert.equal(spendingRoom(l, '2026-09').remaining + poolAt(l, '2026-09'), before);
+  assert.equal(dailyBudget(l, '2026-09', september).spendable, 50000);
+});
+test('leftovers: fixed overspending and an impossible plan do not create carryover', () => {
+  const l = dailyLedger();
+  l.tx.push(tx({ id: 'rent', cat: 'rent', amount: 120000, date: '2026-09-14' }));
+  assert.equal(leftoverOf(l, '2026-09'), 10000);
+  l.months['2026-09'].ceiling = 100000;
+  assert.equal(leftoverOf(l, '2026-09'), 0);
+});
+test('money input: decimal separators are supported without accepting partial numbers', () => {
+  assert.equal(parseMoney('12,34'), 1234);
+  assert.equal(parseMoney('12.34'), 1234);
+  assert.equal(parseMoney('0.29'), 29);
+  for (const bad of ['12.34.56', '1,000.00', '-2', 'Infinity', '10foo', '0.001', '999999999999999']) assert.equal(parseMoney(bad), null, bad);
 });

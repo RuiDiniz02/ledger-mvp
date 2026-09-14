@@ -1,8 +1,8 @@
 /**
  * How a category behaves across months.
  * - `variable`: spending that changes. Resets monthly, warns as it fills.
- * - `fixed`: a known commitment. Counted against the month whether or not
- *   you log it, because you owe it either way.
+ * - `fixed`: a known commitment. Only logged payments count as spending;
+ *   the unpaid target stays reserved in the daily estimate.
  * - `saving`: a pot. The target is a monthly contribution that accumulates;
  *   logging an expense takes money back out of the pot.
  */

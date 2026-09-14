@@ -4,6 +4,10 @@ Next.js 16 (App Router) + React 19 + Tailwind CSS v4 + TypeScript. No backend ye
 
 It is an installable PWA. Added to a phone's home screen it runs full-screen, starts with no network, and keeps every expense on that device — which is the point while the idea is still being tested with real people.
 
+## Latest review
+
+See [the September 2026 code, money and UX review](docs/REVISAO-MVP.md) for corrected daily estimates, onboarding, validation and the product roadmap.
+
 ## Run locally
 
     npm install
@@ -71,13 +75,13 @@ Then open it, let the worker register, and use your browser's offline mode or st
 - **Money is integer minor units (cents)** everywhere. Never floats.
 - **Append-only intent.** Each row carries `source: 'manual' | 'bank' | 'recurring'` so a bank import cannot overwrite hand-entered history. Editing an expense keeps its `id`, `paidBy` and `source`.
 - **Data is never silently dropped.** `lib/store.ts` migrates a stored ledger forward through `MIGRATIONS` on load; anything genuinely unreadable is parked under `ledger.mvp.unreadable` instead of being discarded, so it can still be recovered by hand.
-- **Deleting a category asks what happens to its expenses** — move them, leave them uncategorised, or delete them too. Orphans get an *Uncategorised* card so the month total always equals the sum of what is on screen.
+- **Categories with financial history cannot be deleted or change kind through the UI.** Set their future target to zero until category archiving is implemented. Legacy orphan expenses remain visible under *Uncategorised*.
 
 ## Storage on the device
 
 There is no server, so the only copy of someone's history is the one on their phone. Three things protect it:
 
-1. **`navigator.storage.persist()`** is requested on load, which stops mobile Safari clearing script-writable storage for a site that has not been opened in a while.
+1. **`navigator.storage.persist()`** is requested on load. The browser may decline; it is not a substitute for a backup.
 2. **Installing to the home screen** is prompted for in Account (a real prompt on Android, written instructions on iOS, which has no API for it). Installed storage is much less likely to be evicted.
 3. **Export and import** in Account. Export goes through the share sheet on a phone — the only route that reaches Files or iCloud on iOS — and falls back to a download, then to copying JSON as text. Imports are migrated like stored data, so an old backup still restores, and are previewed before they replace anything.
 

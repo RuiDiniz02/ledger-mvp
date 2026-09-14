@@ -102,3 +102,19 @@ test('backup: the filename is safe for a filesystem', () => {
   assert.match(filename({ ...l, workspace: 'Rui / Casa!! ' }, new Date('2026-09-10T00:00:00Z')), /^ledger-rui-casa-2026-09-10\.json$/);
   assert.match(filename({ ...l, workspace: '' }, new Date('2026-09-10T00:00:00Z')), /^ledger-ledger-2026-09-10\.json$/);
 });
+
+
+test('backup: rejects invalid nested data before it reaches calculations', () => {
+  const valid = migrate(v2())!;
+  const cases = [
+    { ...valid, cats: [null] },
+    { ...valid, cats: [valid.cats[0], valid.cats[0]] },
+    { ...valid, tx: [{ ...valid.tx[0], amount: -1 }] },
+    { ...valid, tx: [{ ...valid.tx[0], amount: 1.1 }] },
+    { ...valid, tx: [{ ...valid.tx[0], pct: 101 }] },
+    { ...valid, tx: [{ ...valid.tx[0], date: '2026-02-30' }] },
+    { ...valid, months: { '2026-13': { ceiling: 100, targets: {} } } },
+    { ...valid, months: { '2026-09': { ceiling: 100, targets: { c1: '200' } } } },
+  ];
+  for (const data of cases) assert.equal(parseBackup(JSON.stringify(data)).ok, false);
+});

@@ -59,7 +59,7 @@ export function parseBackup(text: string): { ok: true; ledger: Ledger } | { ok: 
  * Files or iCloud on iOS, so it is tried first; the download attribute is the
  * desktop path, and the caller falls back to clipboard if both are refused.
  */
-export async function saveBackup(l: Ledger): Promise<'shared' | 'downloaded' | 'failed'> {
+export async function saveBackup(l: Ledger): Promise<'shared' | 'downloaded' | 'cancelled' | 'failed'> {
   const text = serialize(l);
   const name = filename(l);
 
@@ -73,7 +73,7 @@ export async function saveBackup(l: Ledger): Promise<'shared' | 'downloaded' | '
     }
   } catch (e) {
     // A user-cancelled share sheet is not a failure worth falling through for.
-    if (e instanceof DOMException && e.name === 'AbortError') return 'shared';
+    if (e instanceof DOMException && e.name === 'AbortError') return 'cancelled';
   }
 
   try {
