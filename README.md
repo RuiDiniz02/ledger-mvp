@@ -4,6 +4,10 @@ Next.js 16 (App Router) + React 19 + Tailwind CSS v4 + TypeScript. No backend ye
 
 It is an installable PWA. Added to a phone's home screen it runs full-screen, starts with no network, and keeps every expense on that device — which is the point while the idea is still being tested with real people.
 
+## Money across apps
+
+The optional **My money** card combines manually confirmed EUR account balances, separates spending money from savings and investments, and supports money set aside within a spending account. It does not sync balances or change the daily budget estimate. See [the focused product step](docs/ETAPA-1-DINHEIRO.md) for the rules, schema 4 migration and validation.
+
 ## Latest review
 
 See [the September 2026 code, money and UX review](docs/REVISAO-MVP.md) for corrected daily estimates, onboarding, validation and the product roadmap.

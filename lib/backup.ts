@@ -4,7 +4,7 @@ import { migrate } from './store';
 import { SCHEMA, type Ledger } from './types';
 
 export type Backup = { app: 'ledger'; schema: number; exportedAt: string; ledger: Ledger };
-export type Summary = { cats: number; tx: number; months: number; from: string | null; to: string | null; workspace: string };
+export type Summary = { accounts: number; cats: number; tx: number; months: number; from: string | null; to: string | null; workspace: string };
 
 const FILE = 'application/json';
 
@@ -21,6 +21,7 @@ export function filename(l: Ledger, now = new Date()): string {
 export function summarize(l: Ledger): Summary {
   const dates = l.tx.map((t) => t.date).sort();
   return {
+    accounts: (l.moneyAccounts ?? []).filter(a => !a.archived).length,
     cats: l.cats.length,
     tx: l.tx.length,
     months: Object.keys(l.months).length,

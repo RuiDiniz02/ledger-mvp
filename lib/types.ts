@@ -79,7 +79,22 @@ export interface MonthBudget {
 }
 
 /** Bump on every shape change and add a step to MIGRATIONS in lib/store.ts. */
-export const SCHEMA = 3;
+export const SCHEMA = 4;
+
+/** A manually confirmed snapshot, independent from monthly budget envelopes. */
+export type MoneyAccountKind = 'spending' | 'saving' | 'investment';
+export interface MoneyAccount {
+  id: string;
+  name: string;
+  kind: MoneyAccountKind;
+  /** Current amount in EUR cents; spending accounts can be overdrawn. */
+  balance: number;
+  /** Part of a spending balance explicitly set aside; never added to the balance. */
+  reserved: number;
+  /** When the user last confirmed the balance, not the last edit to the name. */
+  confirmedAt: string;
+  archived?: boolean;
+}
 
 export interface Ledger {
   v: number;
@@ -89,6 +104,7 @@ export interface Ledger {
   cats: Category[];
   months: Record<string, MonthBudget>;
   tx: Tx[];
+  moneyAccounts?: MoneyAccount[];
   /** ISO timestamp of the last backup the user exported, for the reminder in Account. */
   lastExport?: string;
   /**

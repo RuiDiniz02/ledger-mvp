@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Tile, TabIcon } from './Icons';
 import Onboarding from './Onboarding';
+import { MoneyAccounts, MoneySummary } from './MoneyAccounts';
 import { useLedger } from '@/lib/store';
 import { money, dayLabel, parseMoney } from '@/lib/format';
 import {
@@ -26,7 +27,7 @@ const SHEET = 'anim-sheet absolute inset-x-0 bottom-0 z-50 rounded-t-[30px] bg-c
 type Screen = 'home' | 'activity' | 'budget' | 'me' | 'detail';
 type Draft = { id: string | null; amount: string; cat: string; date: string; note: string; scope: 'mine' | 'split'; pct: number };
 type CatForm = { id: string | null; name: string; kind: Kind; ci: number; target: string; mark: MarkKind; goal: string };
-type Sheet = null | 'log' | 'tx' | 'cat' | 'import' | 'pool' | 'add';
+type Sheet = null | 'log' | 'tx' | 'cat' | 'import' | 'pool' | 'add' | 'money';
 /** What to do with the expenses of a category being deleted. */
 type CatDelete = { count: number; mode: 'uncat' | 'move' | 'purge'; dest: string };
 
@@ -641,6 +642,7 @@ export default function App() {
                   <p className='mt-2 leading-relaxed'>{t('estimateNotice')}</p>
                 </details>
               )}
+              {m.isCurrent && <MoneySummary ledger={l} onOpen={() => { tap('light'); setSheet('money'); }} />}
               {!m.isCurrent && <button onClick={() => setYm(ymNow())} className='mt-3 min-h-11 w-full rounded-xl bg-white text-sm font-semibold text-deep'>{t('currentMonth')}</button>}
               {alloc > ceiling && <button onClick={() => go('budget')} className='mt-3 w-full rounded-2xl border border-[#d8365b]/25 bg-[#fff1f4] p-4 text-left text-sm text-[#9b2440]'><strong>{t('planOver', { amount: $(alloc - ceiling) })}</strong><span className='mt-1 block'>{t('planOverHelp')}</span></button>}
 
@@ -952,7 +954,7 @@ export default function App() {
 
           {screen === 'me' && (
             <div className='px-[18px] pb-6'>
-              <div className='mb-[18px] text-2xl font-bold tracking-[-0.015em] text-ink'>{t('account')}</div>
+              <div className='mb-[18px] text-2xl font-bold tracking-[-0.015em] text-ink'>{t('settings')}</div>
               <div className={CARD + ' rounded-[22px] p-[18px]'}>
                 <div className={LABEL}>{t('workspace')}</div>
                 <input value={l.workspace} onChange={(e) => { const v = e.target.value; update((d) => { d.workspace = v; }); }} className='mt-2.5 h-[46px] w-full rounded-2xl bg-canvas px-3.5 text-[15px] font-semibold text-ink outline-none' />
@@ -1057,25 +1059,6 @@ export default function App() {
                 />
               </div>
 
-              <div className={LABEL + ' mb-2.5 mt-6'}>{t('comingNext')}</div>
-              <div className='flex flex-col gap-[9px]'>
-                {[
-                  { t: t('sharedHousehold'), s: t('sharedBody'), p: 'PHASE 2', g: 'linear-gradient(155deg,#d3b6f7,#a878e2 62%,#7a4bb5)' },
-                  { t: t('bankSync'), s: t('bankBody'), p: 'PHASE 3', g: 'linear-gradient(155deg,#a3b0ff,#6c7ff2 62%,#4757c9)' },
-                ].map((x) => (
-                  <div key={x.p} className={CARD + ' flex items-center gap-3 p-4 opacity-70'}>
-                    <div className='grid h-[38px] w-[38px] shrink-0 place-items-center rounded-[13px]' style={{ background: x.g, boxShadow: 'inset 0 1px 0 rgba(255,255,255,.5)' }}>
-                      <div className='h-2.5 w-2.5 rounded-full bg-white/90' />
-                    </div>
-                    <div className='flex-1'>
-                      <div className='text-sm font-semibold text-ink'>{x.t}</div>
-                      <div className='mt-[3px] text-xs text-[#63757d]'>{x.s}</div>
-                    </div>
-                    <div className='flex h-6 items-center rounded-lg bg-canvas px-2.5 font-mono text-[10px] font-semibold text-[#63757d]'>{x.p}</div>
-                  </div>
-                ))}
-              </div>
-
               <button onClick={() => { if (confirm(t('resetBody'))) { reset(); } }} className={CARD + ' mt-6 flex w-full items-center justify-between p-4 text-left'}>
                 <div>
                   <div className='text-sm font-semibold text-ink'>{t('resetData')}</div>
@@ -1095,6 +1078,19 @@ export default function App() {
             <div className='flex-1 text-[13px] font-medium text-white'>{toast}</div>
           </div>
         )}
+
+        {sheet === 'money' && <>
+          <div className={SCRIM} onClick={closeSheet} />
+          <div role='dialog' aria-modal='true' aria-labelledby='money-sheet-title' className={SHEET + ' flex max-h-[96%] flex-col'}>
+            <div className='flex shrink-0 items-center justify-between gap-3 border-b border-black/[0.06] px-5 py-4'>
+              <h2 id='money-sheet-title' className='text-lg font-bold text-ink'>{t('moneyTitle')}</h2>
+              <button onClick={closeSheet} aria-label={t('close')} className='grid h-11 w-11 place-items-center rounded-full bg-black/[0.05] text-[#5b6a70]'>✕</button>
+            </div>
+            <div className='min-h-0 overflow-y-auto overscroll-contain px-5 pt-4' style={{ paddingBottom: 'calc(24px + env(safe-area-inset-bottom))' }}>
+              <MoneyAccounts ledger={l} update={update} />
+            </div>
+          </div>
+        </>}
 
         {sheet === 'log' && (
           <>
@@ -1447,6 +1443,7 @@ export default function App() {
                     incoming.summary.cats + ' ' + t(incoming.summary.cats === 1 ? 'unitCat' : 'unitCats'),
                     incoming.summary.tx + ' ' + t(incoming.summary.tx === 1 ? 'unitTx' : 'unitTxs'),
                     incoming.summary.months + ' ' + t(incoming.summary.months === 1 ? 'unitMonth' : 'unitMonths'),
+                    incoming.summary.accounts + ' ' + t('moneyUnit'),
                   ].join(' · ')}
                 </div>
                 {incoming.summary.from && incoming.summary.to && (
@@ -1464,7 +1461,7 @@ export default function App() {
         )}
 
         <nav inert={sheet !== null} aria-label={t('overview')} className='absolute inset-x-0 bottom-0 z-10 flex h-[82px] items-start border-t border-black/[0.07] bg-white/95 px-2 pt-2.5 backdrop-blur-xl' style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
-          {([['home', t('overview')], ['activity', t('activity')], ['spacer', ''], ['budget', t('budget')], ['me', t('account')]] as const).map(([k, label]) =>
+          {([['home', t('overview')], ['activity', t('activity')], ['spacer', ''], ['budget', t('budget')], ['me', t('settings')]] as const).map(([k, label]) =>
             k === 'spacer' ? (
               <div key='spacer' className='flex-1' />
             ) : (

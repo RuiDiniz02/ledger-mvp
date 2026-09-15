@@ -64,7 +64,7 @@ export function monthMeta(ym: string, now = new Date()) {
 }
 
 export function emptyLedger(): Ledger {
-  return { v: SCHEMA, workspace: '', lang: 'en', onboarded: false, cats: [], months: {}, tx: [] };
+  return { v: SCHEMA, workspace: '', lang: 'en', onboarded: false, cats: [], months: {}, tx: [], moneyAccounts: [] };
 }
 
 /** Suggested starter categories offered during setup. Everything stays editable. */

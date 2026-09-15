@@ -17,6 +17,8 @@ export type StorageInfo = { persisted: boolean; usedKb: number | null; standalon
  * browser holds the only copy of their history.
  */
 const MIGRATIONS: Record<number, (d: Record<string, unknown>) => Record<string, unknown>> = {
+  // Accounts begin empty: budget pots are plans, not confirmed bank balances.
+  3: (d) => ({ ...d, moneyAccounts: [], v: 4 }),
   // v2 had no lastExport and allowed tx rows without paidBy/source.
   2: (d) => {
     const tx = Array.isArray(d.tx) ? d.tx : [];
